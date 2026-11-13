@@ -115,3 +115,77 @@ test('renderer sizing, density cap, switching/reset and Strict Mode style cleanu
   const again = createParticleRenderer(host, marker, () => {})
   assert.equal(frames.size, 1); assert.equal(host.children.length, 1); again.dispose()
 })
+
+const { createCameraSession, cameraFailure } = await import(moduleURL('src/camera/session.ts'))
+function cameraHarness(getStream) {
+  let stopped = 0, terminated = 0, paused = 0
+  const states = [], frames = new Map()
+  const track = new EventTarget(); track.stop = () => { stopped++ }
+  const stream = { getTracks: () => [track], getVideoTracks: () => [track] }
+  const video = new EventTarget()
+  Object.assign(video, { readyState: 2, currentTime: 1, play: async () => {}, pause: () => { paused++ }, srcObject: null })
+  const worker = { postMessage: message => { worker.last = message }, terminate: () => { terminated++ } }
+  let serial = 0
+  const session = createCameraSession(video, state => states.push(state), {
+    getStream: getStream || (async () => stream), createWorker: () => worker,
+    bitmap: async () => ({ close() {} }),
+    schedule: cb => { frames.set(++serial, cb); return serial }, cancel: id => frames.delete(id),
+  })
+  return { session, states, stream, track, video, worker, frames, counts: () => ({ stopped, terminated, paused }) }
+}
+test('camera lifecycle: permission, initialization, model loading, actual ready response, disable and retry', async () => {
+  const h = cameraHarness()
+  await h.session.enable()
+  assert.deepEqual(h.states.map(s => s.phase), ['permission', 'initializing', 'loading'])
+  assert.equal(h.video.srcObject, h.stream)
+  h.worker.onmessage({ data: { type: 'loaded' } })
+  assert.equal(h.states.at(-1).phase, 'initializing')
+  h.worker.onmessage({ data: { type: 'result' } })
+  assert.equal(h.states.at(-1).phase, 'ready')
+  h.session.disable()
+  assert.equal(h.states.at(-1).phase, 'off')
+  assert.equal(h.video.srcObject, null); assert.equal(h.frames.size, 0)
+  assert.equal(h.counts().stopped, 1); assert.equal(h.counts().terminated, 1)
+  await h.session.enable(); h.session.dispose()
+  assert.equal(h.counts().stopped, 2); assert.equal(h.counts().terminated, 2)
+})
+test('camera errors offer specific recovery and model failure shuts down camera', async () => {
+  for (const [name, pattern] of [['NotAllowedError', /denied/], ['NotFoundError', /No usable/], ['NotReadableError', /in use/]]) {
+    const e = new Error(); e.name = name
+    const h = cameraHarness(async () => { throw e })
+    await h.session.enable()
+    assert.equal(h.states.at(-1).phase, 'failure'); assert.match(h.states.at(-1).message, pattern)
+    assert.ok(h.states.at(-1).recovery)
+    if (name === 'NotAllowedError') assert.equal(h.states.at(-1).permission, 'denied')
+    h.session.dispose()
+  }
+  const h = cameraHarness(); await h.session.enable()
+  h.worker.onmessage({ data: { type: 'error' } })
+  assert.match(h.states.at(-1).message, /model could not load/)
+  assert.equal(h.counts().stopped, 1); assert.equal(h.counts().terminated, 1)
+  assert.ok(cameraFailure(new Error(), 'ready').recovery)
+  h.session.dispose()
+})
+test('disable/unmount during permission and model loading cannot resurrect camera', async () => {
+  let grant
+  const h = cameraHarness(() => new Promise(resolve => { grant = resolve }))
+  const pending = h.session.enable()
+  h.session.disable(); grant(h.stream); await pending
+  assert.equal(h.counts().stopped, 1); assert.equal(h.video.srcObject, null)
+  assert.equal(h.states.at(-1).phase, 'off')
+  h.session.dispose()
+  const loading = cameraHarness(); await loading.session.enable()
+  const count = loading.states.length
+  loading.session.dispose()
+  loading.worker.onmessage({ data: { type: 'loaded' } })
+  assert.equal(loading.states.length, count); assert.equal(loading.frames.size, 0)
+  assert.equal(loading.counts().terminated, 1); assert.equal(loading.counts().stopped, 1)
+})
+test('camera disconnect is a recoverable failure and stops local resources', async () => {
+  const h = cameraHarness(); await h.session.enable()
+  h.worker.onmessage({ data: { type: 'loaded' } }); h.worker.onmessage({ data: { type: 'result' } })
+  h.track.dispatchEvent(new Event('ended'))
+  assert.equal(h.states.at(-1).phase, 'failure')
+  assert.equal(h.counts().stopped, 1); assert.equal(h.frames.size, 0)
+  h.session.dispose()
+})
