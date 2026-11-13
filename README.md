@@ -53,7 +53,7 @@ The optional Google Fonts stylesheet has local sans-serif fallbacks; particle re
 
 ## Next milestone
 
-Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Webcam capture, gesture recognition, sound, recording, accounts, and backend services are intentionally outside this milestone.
+Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle and local hand-model initialization are implemented. Gesture-to-particle mapping, sound, recording, accounts, and backend services remain future work.
 
 ## Verification
 
@@ -88,3 +88,18 @@ Manual browser checklist (`npm run dev`, then open Vite's local URL):
 - Enable reduced motion; confirm ambient movement stops while controls remain usable.
 
 These automated tests validate logic and lifecycle contracts; they do not establish shader correctness, frame rate, visual quality, native pointer capture, or fullscreen behavior in a browser.
+
+
+## Opt-in camera controls
+
+Select **Enable Camera** to request video only (`audio: false`). The panel reports permission, camera initialization, model loading, first-frame initialization, ready, and failure states. **Disable Camera** works during every active stage, including a pending permission prompt. The browser prompt itself cannot be dismissed programmatically; if permission is granted after disabling, the late stream is immediately stopped.
+
+Denied permission provides browser site-settings guidance. Missing devices provide reconnect guidance; unreadable/busy devices suggest closing other camera apps and checking system permissions. Model download failures offer retry guidance. Failed setup stops the camera automatically, and **Retry · Enable Camera** starts a fresh session. HTTPS or localhost is required.
+
+Camera frames are processed locally in a dedicated MediaPipe worker, at up to 10 inference requests per second with only one in flight. The runtime is loaded only after explicit enable. Its pinned WASM assets download from jsDelivr (`@mediapipe/tasks-vision@1.2.3`); the hand model downloads from Google Storage. These are inbound asset requests: no images, video, audio, or landmarks are uploaded, stored, or recorded. Camera readiness means the model has processed its first frame, not that a hand was found. Particle gestures are not mapped yet; the visible Mouse mode and all mouse controls remain usable even while the camera is ready.
+
+`src/CameraControls.tsx` owns the panel and DOM video element. `src/camera/session.ts` owns cancellable startup, state transitions, timeouts, video tracks, and worker scheduling. `src/camera/tracker.worker.ts` owns the local model and frame processing. Disable, failure, page exit, and unmount stop tracks, detach video, cancel frame scheduling/timers, and terminate the worker to release its model/WASM resources. Late streams and frame snapshots are released without restarting a cancelled session.
+
+Camera automated verification adds four test groups (`npm run verify`, eight total): lifecycle transitions/retry; denied/missing/busy/model failures; disable/unmount during permission/model loading; and device disconnection. Tests use media and worker doubles and do **not** prove real device access or model inference.
+
+Manual camera checks still required: allow/deny permission; unplug a camera; test an occupied device; block model downloads; disable during each loading stage; retry; confirm the browser's camera indicator turns off after disable/unmount; inspect network requests to confirm only model assets download. Browser QA was attempted but the computer-use tool timed out; actual camera and model behavior remain unverified on hardware.

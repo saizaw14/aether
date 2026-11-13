@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import ParticleScene from './ParticleScene'
+import CameraControls from './CameraControls'
 import type { Formation } from './particles/formations'
 import './App.css'
 
@@ -32,6 +33,7 @@ function App() {
     </header>
     <section className="intro" aria-label="About Aether"><p className="eyebrow">AN INTERACTIVE PARTICLE UNIVERSE</p><h1>Shape the universe<br />with your hands.</h1><p className="intro-description">A little curiosity. Infinite possibilities.</p></section>
     <div className="scene-caption" aria-hidden="true"><span className="caption-line" /><span>{formation === 'nebula' ? '01 / NEBULA' : '02 / GALAXY'}</span><small>5,000 points of possibility</small></div>
+    <CameraControls />
     <section className="control-dock" aria-label="Universe controls">
       <div className="formation-controls"><span className="control-label">FORMATION</span><div className="segmented" role="group" aria-label="Particle formation"><button aria-pressed={formation === 'nebula'} onClick={() => setFormation('nebula')}><span>✺</span> Nebula</button><button aria-pressed={formation === 'galaxy'} onClick={() => setFormation('galaxy')}><span>◎</span> Galaxy</button></div></div>
       <div className="strength-control"><label className="control-label" htmlFor="strength">INTERACTION <output htmlFor="strength">{Math.round(strength * 100)}%</output></label><input id="strength" type="range" min="0" max="1" step="0.01" value={strength} aria-label="Interaction strength" onChange={e => setStrength(Number(e.target.value))} /></div>
