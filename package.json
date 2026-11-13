@@ -8,10 +8,13 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "prepare:tracking": "node scripts/prepare-tracking.mjs",
+    "predev": "npm run prepare:tracking",
+    "prebuild": "npm run prepare:tracking"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.2.3",
+    "@mediapipe/tasks-vision": "1.2.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "three": "^0.187.0"

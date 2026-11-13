@@ -117,7 +117,7 @@ test('renderer sizing, density cap, switching/reset and Strict Mode style cleanu
 })
 
 const { createCameraSession, cameraFailure } = await import(moduleURL('src/camera/session.ts'))
-function cameraHarness(getStream) {
+function cameraHarness(getStream, overrides = {}) {
   let stopped = 0, terminated = 0, paused = 0
   const states = [], frames = new Map()
   const track = new EventTarget(); track.stop = () => { stopped++ }
@@ -130,6 +130,7 @@ function cameraHarness(getStream) {
     getStream: getStream || (async () => stream), createWorker: () => worker,
     bitmap: async () => ({ close() {} }),
     schedule: cb => { frames.set(++serial, cb); return serial }, cancel: id => frames.delete(id),
+    ...overrides,
   })
   return { session, states, stream, track, video, worker, frames, counts: () => ({ stopped, terminated, paused }) }
 }
@@ -188,4 +189,53 @@ test('camera disconnect is a recoverable failure and stops local resources', asy
   assert.equal(h.states.at(-1).phase, 'failure')
   assert.equal(h.counts().stopped, 1); assert.equal(h.frames.size, 0)
   h.session.dispose()
+})
+
+test('inference is single-flight and unchanged decoded video frames are skipped', async () => {
+  let snapshots = 0, closed = 0, results = 0
+  const h = cameraHarness(undefined, {
+    bitmap: async () => { snapshots++; return { close() { closed++ } } },
+    onTracking: () => { results++ },
+  })
+  await h.session.enable()
+  h.worker.onmessage({ data: { type: 'loaded' } })
+  const tick = async now => {
+    const [key, callback] = h.frames.entries().next().value
+    h.frames.delete(key); callback(now); await Promise.resolve()
+  }
+  await tick(1000); assert.equal(snapshots, 1)
+  h.video.currentTime = 2
+  await tick(1200); assert.equal(snapshots, 1) // Pending worker result owns the only request.
+  const image = { close() { closed++ } }
+  h.worker.onmessage({ data: { type: 'result', hands: [], timestamp: 1000, image } })
+  assert.equal(closed, 1); assert.equal(results, 1)
+  await tick(1300); assert.equal(snapshots, 2)
+  h.worker.onmessage({ data: { type: 'result', hands: [], timestamp: 1300 } })
+  await tick(1500); assert.equal(snapshots, 2) // No newly decoded video frame.
+  h.video.currentTime = 3
+  await tick(1510); assert.equal(snapshots, 3)
+  h.session.disable()
+  h.worker.onmessage({ data: { type: 'result', hands: [], image } })
+  assert.equal(closed, 2) // Even stale transferred frames must be released.
+  h.session.dispose()
+})
+
+test('preview and normalized interaction coordinates share the same mirror transform', async () => {
+  const { displayPoint, interactionPoint, drawTrackingPreview, HAND_CONNECTIONS } = await import(moduleURL('src/camera/landmarks.ts'))
+  const landmark = { x: .2, y: .3, z: -.1 }
+  for (const mirrored of [false, true]) {
+    const screen = displayPoint(landmark, mirrored), input = interactionPoint(landmark, mirrored)
+    assert.equal((input.x + 1) / 2, screen.x)
+    assert.equal((1 - input.y) / 2, screen.y)
+  }
+  assert.equal(displayPoint(landmark, true).x, .8)
+  assert.equal(HAND_CONNECTIONS.length, 21)
+  const calls = []
+  const ctx = { clearRect() {}, save() {}, restore() {}, translate(...a) { calls.push(['translate', ...a]) }, scale(...a) { calls.push(['scale', ...a]) }, drawImage() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, arc(...a) { calls.push(['arc', ...a]) }, fill() {} }
+  const canvas = { width: 0, height: 0, getContext: () => ctx }
+  const hand = { landmarks: Array.from({ length: 21 }, () => landmark), handedness: 'Left', confidence: .9 }
+  drawTrackingPreview(canvas, { width: 640, height: 480 }, { hands: [hand, hand], timestamp: 1 }, true)
+  assert.equal(calls.filter(c => c[0] === 'arc').length, 42)
+  assert.deepEqual(calls.find(c => c[0] === 'scale'), ['scale', -1, 1])
+  assert.equal(calls.find(c => c[0] === 'arc')[1], 512) // Mirrored 0.2 → 0.8 of 640.
 })

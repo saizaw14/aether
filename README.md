@@ -49,11 +49,11 @@ No React state updates occur per frame. Pixel density is capped at 1.75. Cleanup
 - Responsive control dock, mouse mode indicator, reset, fullscreen, and accessible control labels.
 - Reduced-motion support and graphics initialization/context-loss messaging.
 
-The optional Google Fonts stylesheet has local sans-serif fallbacks; particle rendering requires no external assets or services.
+The optional Google Fonts stylesheet has local sans-serif fallbacks. Particle rendering requires no external assets or services; tracking assets are prepared before development/build and served locally.
 
 ## Next milestone
 
-Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle and local hand-model initialization are implemented. Gesture-to-particle mapping, sound, recording, accounts, and backend services remain future work.
+Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle, two-hand landmark tracking, and an optional mirrored overlay preview are implemented. Gesture-to-particle mapping, sound, recording, accounts, and backend services remain future work.
 
 ## Verification
 
@@ -96,10 +96,31 @@ Select **Enable Camera** to request video only (`audio: false`). The panel repor
 
 Denied permission provides browser site-settings guidance. Missing devices provide reconnect guidance; unreadable/busy devices suggest closing other camera apps and checking system permissions. Model download failures offer retry guidance. Failed setup stops the camera automatically, and **Retry · Enable Camera** starts a fresh session. HTTPS or localhost is required.
 
-Camera frames are processed locally in a dedicated MediaPipe worker, at up to 10 inference requests per second with only one in flight. The runtime is loaded only after explicit enable. Its pinned WASM assets download from jsDelivr (`@mediapipe/tasks-vision@1.2.3`); the hand model downloads from Google Storage. These are inbound asset requests: no images, video, audio, or landmarks are uploaded, stored, or recorded. Camera readiness means the model has processed its first frame, not that a hand was found. Particle gestures are not mapped yet; the visible Mouse mode and all mouse controls remain usable even while the camera is ready.
+Camera frames are processed locally in a dedicated MediaPipe worker, at up to 10 inference requests per second with only one in flight. The runtime is loaded only after explicit enable. Matching WASM and model assets are served from Aether’s own origin. The preparation script downloads the official model from Google Storage once and verifies its SHA-256; WASM files are copied from the pinned installed package. There are no runtime CDN requests. These are inbound asset requests: no images, video, audio, or landmarks are uploaded, stored, or recorded. Camera readiness means the model has processed its first frame, not that a hand was found. Particle gestures are not mapped yet; the visible Mouse mode and all mouse controls remain usable even while the camera is ready.
 
 `src/CameraControls.tsx` owns the panel and DOM video element. `src/camera/session.ts` owns cancellable startup, state transitions, timeouts, video tracks, and worker scheduling. `src/camera/tracker.worker.ts` owns the local model and frame processing. Disable, failure, page exit, and unmount stop tracks, detach video, cancel frame scheduling/timers, and terminate the worker to release its model/WASM resources. Late streams and frame snapshots are released without restarting a cancelled session.
 
 Camera automated verification adds four test groups (`npm run verify`, eight total): lifecycle transitions/retry; denied/missing/busy/model failures; disable/unmount during permission/model loading; and device disconnection. Tests use media and worker doubles and do **not** prove real device access or model inference.
 
-Manual camera checks still required: allow/deny permission; unplug a camera; test an occupied device; block model downloads; disable during each loading stage; retry; confirm the browser's camera indicator turns off after disable/unmount; inspect network requests to confirm only model assets download. Browser QA was attempted but the computer-use tool timed out; actual camera and model behavior remain unverified on hardware.
+Manual camera checks still required: allow/deny permission; unplug a camera; test an occupied device; block model downloads; disable during each loading stage; retry; confirm the browser's camera indicator turns off after disable/unmount; inspect network requests to confirm only model assets download. Browser QA remains blocked by unavailable computer-use permission; actual camera and model behavior remain unverified on hardware.
+
+
+## Two-hand tracking and preview
+
+The worker uses `@mediapipe/tasks-vision` **1.2.3**, pinned exactly, in `VIDEO` mode with `numHands: 2`. It returns 21 normalized landmarks per detected hand, handedness, confidence, and the inference timestamp. The optional **Show camera preview** checkbox displays a canvas with both hand skeletons (cyan/violet); **Mirror view** defaults on. Neither preview checkbox changes camera permission or restarts inference. Mouse particle controls remain active; gesture-driven attraction/scale/rotation are the next integration step.
+
+The preview displays the exact analyzed frame returned by the worker, not a newer live video frame. The main thread closes each transferred image after drawing (including stale results after cancellation). Landmark coordinates remain raw/unmirrored in `TrackingFrame`; `displayPoint` applies `x → 1−x` for mirrored views, and `interactionPoint` maps the same displayed coordinates to the renderer’s `[-1,1]`, Y-up input space. No crop or `object-fit: cover` transform is applied, so changing preview size preserves landmark alignment. These helpers are the contract for future gesture-to-particle mapping.
+
+At most one snapshot/inference request is in flight, including the asynchronous snapshot step. The scheduler skips unchanged `video.currentTime` values, caps inference at 10 Hz, and uses monotonic animation timestamps. React updates only when the detected-hand count changes; canvas drawing runs outside React state. Losing hands clears the skeleton on the next result; disable/failure clears the preview/count.
+
+### Asset preparation
+
+`npm run dev` and `npm run build` automatically run `npm run prepare:tracking`. The script copies the matching module-loader JS and WASM from the pinned package into ignored `public/tracking/mediapipe-1.2.3/` and downloads the versioned official model if missing. Model SHA-256: `fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1`. Cached valid models need no network; failed downloads or checksum mismatches fail preparation with an error. First setup/CI needs internet access to Google Storage. Do not skip Vite’s prebuild hook in CI.
+
+Vite copies these assets into `dist/tracking/`; deploy the entire `dist` directory, including that directory. Asset URLs respect Vite’s configured `base` and are resolved on the main thread before being sent to the ES module worker. Runtime/model loading is same-origin in development and production. Serve `.wasm` with `application/wasm`; hosts must serve real files rather than returning the SPA fallback for missing tracking assets. A corrupt/missing runtime asset triggers the recoverable model-loading failure state. Upgrade the package pin, preparation script, and asset path together.
+
+Compatibility was checked against the current [official Hand Landmarker web guide](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker?tab=Web), [web setup guide](https://developers.google.com/edge/mediapipe/solutions/setup_web), and installed TypeScript API (including module WASM filesets). Use a modern browser with WebAssembly, module workers, OffscreenCanvas/ImageBitmap support, camera access, and HTTPS or localhost. CPU inference keeps GPU requirements modest; unsupported browser/runtime combinations show a recoverable failure and preserve mouse mode.
+
+Verification: lint/build pass and `npm run verify` passes ten test groups. New tests cover one inference request in flight, decoded-frame deduplication, stale-image cleanup, two skeletons, and mirror/input coordinate agreement. Real development HTTP checks returned 200 for page, worker, JS runtime, WASM (`application/wasm`), and model. Both public and production directories contain the expected runtime and checksum-verified model. These checks do not establish real inference performance or camera accuracy.
+
+Manual checks still needed: show one hand then two; move toward each edge in mirrored/unmirrored views; check all joints follow the hands; hide/show preview while tracking; remove both hands; disable/re-enable while processing; test production hosting on a non-root base path. Browser visual/hardware QA could not run because computer-use permission is unavailable.

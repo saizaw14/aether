@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Prepared from pinned package/model by predev and prebuild
+public/tracking/
