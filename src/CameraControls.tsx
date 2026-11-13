@@ -2,8 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { cameraOff, createCameraSession } from './camera/session'
 import type { CameraState } from './camera/session'
 import { drawTrackingPreview } from './camera/landmarks'
+import { createGestureEngine, GESTURE_SENSITIVITY_PRESETS } from './gestures/engine'
+import type { GestureEngine, GestureResult, GestureSensitivity } from './gestures/engine'
 
-export default function CameraControls() {
+interface Props { onGestures?: (result: GestureResult) => void }
+export default function CameraControls({ onGestures }: Props) {
+  const sensitivity = useRef<GestureSensitivity>('balanced')
+  const [sensitivityName, setSensitivityName] = useState<GestureSensitivity>('balanced')
+  const engine = useRef<GestureEngine | null>(null)
+  const observer = useRef(onGestures)
+  const summary = useRef('')
+  const [gestureSummary, setGestureSummary] = useState('')
+  useEffect(() => { observer.current = onGestures }, [onGestures])
   const video = useRef<HTMLVideoElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const previewEnabled = useRef(false)
@@ -16,6 +26,15 @@ export default function CameraControls() {
   const [state, setState] = useState<CameraState>(cameraOff)
   useEffect(() => {
     if (!video.current) return
+    const gestures = createGestureEngine({ mirrored: mirrored.current, ...GESTURE_SENSITIVITY_PRESETS[sensitivity.current] })
+    engine.current = gestures
+    let mounted = true
+    let receivedAt = 0
+    const deliver = (result: GestureResult) => {
+      observer.current?.(result)
+      const text = result.hands.filter(hand => hand.present).map(hand => `Hand ${hand.id}: ${hand.pinching ? 'pinching' : 'open'}`).join(' · ')
+      if (mounted && summary.current !== text) { summary.current = text; setGestureSummary(text) }
+    }
     const controller = createCameraSession(video.current, setState, {
       getStream: () => {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return Promise.reject(new DOMException('Camera requires HTTPS or localhost', 'NotSupportedError'))
@@ -25,9 +44,14 @@ export default function CameraControls() {
       bitmap: source => createImageBitmap(source),
       assetBase: new URL(`${import.meta.env.BASE_URL}tracking/mediapipe-1.2.3/`, window.location.href).href,
       onTracking: (frame, image) => {
+        if (frame.timestamp === 0) { receivedAt = 0; deliver(gestures.reset()) }
+        else {
+          receivedAt = performance.now()
+          deliver(gestures.update({ ...frame, aspectRatio: frame.aspectRatio ?? 4 / 3 }))
+        }
         if (previousCount.current !== frame.hands.length) {
           previousCount.current = frame.hands.length
-          setHandCount(frame.hands.length)
+          if (mounted) setHandCount(frame.hands.length)
         }
         if (!canvas.current) return
         if (image && previewEnabled.current) drawTrackingPreview(canvas.current, image, frame, mirrored.current)
@@ -36,9 +60,16 @@ export default function CameraControls() {
       schedule: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id),
     })
     session.current = controller
+    const expiry = window.setInterval(() => {
+      const now = performance.now()
+      if (receivedAt && now - receivedAt >= gestures.settings.trackingLossMs) {
+        receivedAt = 0
+        deliver(gestures.advance(now))
+      }
+    }, 100)
     const leave = () => controller.disable()
     window.addEventListener('pagehide', leave)
-    return () => { window.removeEventListener('pagehide', leave); controller.dispose(); session.current = null }
+    return () => { mounted = false; window.clearInterval(expiry); window.removeEventListener('pagehide', leave); controller.dispose(); session.current = null; engine.current = null }
   }, [])
   const active = !['off', 'failure'].includes(state.phase)
   return <section className="camera-panel" aria-label="Camera controls">
@@ -54,15 +85,29 @@ export default function CameraControls() {
       }} /> Show camera preview</label>
       <label><input type="checkbox" checked={mirrorPreview} onChange={event => {
         mirrored.current = event.target.checked
+        engine.current?.configure({ mirrored: event.target.checked })
         setMirrorPreview(event.target.checked)
         canvas.current?.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
       }} /> Mirror view</label>
     </div>
+    <label className="gesture-settings">Gesture sensitivity
+      <select value={sensitivityName} onChange={event => {
+        const next = event.target.value as GestureSensitivity
+        sensitivity.current = next
+        setSensitivityName(next)
+        engine.current?.configure(GESTURE_SENSITIVITY_PRESETS[next])
+      }}>
+        <option value="gentle">Gentle</option>
+        <option value="balanced">Balanced</option>
+        <option value="precise">Precise</option>
+      </select>
+    </label>
     <div className="tracking-preview" hidden={!showPreview}>
       <canvas ref={canvas} aria-label="Camera preview with hand landmarks" />
       <span>{state.phase === 'ready' ? `${handCount} / 2 hands detected` : 'Enable camera to see landmarks'}</span>
     </div>
     <p className="camera-hands" role="status">{state.phase === 'ready' ? `${handCount} ${handCount === 1 ? 'hand' : 'hands'} detected` : 'Tracks up to two hands'}</p>
+    {gestureSummary && <p className="camera-hands" role="status">{gestureSummary}</p>}
     <p className="camera-privacy">Video only. Frames stay on this device.<br />{state.phase === 'ready' ? 'Tracker ready. Use the mouse to shape particles.' : 'Mouse controls remain available.'}</p>
     <video ref={video} muted playsInline className="camera-source" aria-hidden="true" />
   </section>

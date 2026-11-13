@@ -1,6 +1,6 @@
 export interface Landmark { x: number; y: number; z: number }
 export interface TrackedHand { landmarks: Landmark[]; handedness: string; confidence: number }
-export interface TrackingFrame { hands: TrackedHand[]; timestamp: number }
+export interface TrackingFrame { hands: TrackedHand[]; timestamp: number; aspectRatio?: number }
 // Raw model coordinates stay unmirrored. Both preview and input use this one transform.
 export function displayPoint(point: Landmark, mirrored: boolean) {
   return { x: mirrored ? 1 - point.x : point.x, y: point.y }

@@ -446,3 +446,6 @@ footer {
 .camera-panel { max-height: calc(100svh - 230px); overflow-y: auto; }
 @media(max-width: 850px) { .camera-panel { max-height: calc(100svh - 330px); } }
 @media(max-width: 650px) { .camera-panel { max-height: calc(100svh - 365px); } }
+.gesture-settings { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; color: #b2bccb; font-size: 10px; }
+.gesture-settings select { font: inherit; color: #d2e1e7; background: #171d29; border: 1px solid #ffffff24; border-radius: 5px; padding: 5px; }
+.gesture-settings select:focus-visible { outline: 2px solid #9de8e9; outline-offset: 3px; }

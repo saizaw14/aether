@@ -2,18 +2,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import path from 'node:path'
 import ts from 'typescript'
 import * as THREE from 'three'
 const modules = new Map()
-function moduleURL(path) {
-  if (modules.has(path)) return modules.get(path)
-  let code = ts.transpileModule(fs.readFileSync(path, 'utf8'), {
+function moduleURL(pathname) {
+  if (modules.has(pathname)) return modules.get(pathname)
+  let code = ts.transpileModule(fs.readFileSync(pathname, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
   }).outputText
-  code = code.replace(/from '\.\/(formations|interaction)'/g, (_, name) => `from '${moduleURL(`src/particles/${name}.ts`)}'`)
-  if (path.endsWith('renderer.ts')) code = code.replace("import * as THREE from 'three';", 'const THREE = globalThis.testThree;')
+  code = code.replace(/from '(\.[^']+)'/g, (_, name) => `from '${moduleURL(path.resolve(path.dirname(pathname), name + '.ts'))}'`)
+  if (pathname.endsWith('renderer.ts')) code = code.replace("import * as THREE from 'three';", 'const THREE = globalThis.testThree;')
   const url = 'data:text/javascript;base64,' + Buffer.from(code).toString('base64')
-  modules.set(path, url)
+  modules.set(pathname, url)
   return url
 }
 const { generateFormation } = await import(moduleURL('src/particles/formations.ts'))
@@ -238,4 +239,115 @@ test('preview and normalized interaction coordinates share the same mirror trans
   assert.equal(calls.filter(c => c[0] === 'arc').length, 42)
   assert.deepEqual(calls.find(c => c[0] === 'scale'), ['scale', -1, 1])
   assert.equal(calls.find(c => c[0] === 'arc')[1], 512) // Mirrored 0.2 → 0.8 of 640.
+})
+
+const { createGestureEngine, DEFAULT_GESTURE_SETTINGS } = await import(moduleURL('src/gestures/engine.ts'))
+function syntheticHand({ x = .5, y = .4, ratio = .6, scale = 1, aspect = 1, label = 'Left', confidence = .99 } = {}) {
+  const point = (dx, dy) => ({ x: x + dx * scale / aspect, y: y + dy * scale, z: 0 })
+  const landmarks = Array.from({ length: 21 }, () => point(0, 0))
+  landmarks[0] = point(0, .2)
+  landmarks[5] = point(-.09, 0); landmarks[9] = point(0, 0)
+  landmarks[13] = point(.04, 0); landmarks[17] = point(.09, 0)
+  landmarks[4] = point(-ratio * .19 / 2, -.08); landmarks[8] = point(ratio * .19 / 2, -.08)
+  return { landmarks, handedness: label, confidence }
+}
+const gestureFrame = (timestamp, hands, aspectRatio = 1) => ({ timestamp, hands, aspectRatio })
+const pinchEvents = result => result.events.filter(e => e.type.startsWith('pinch-')).map(e => e.type)
+test('gesture pinch metrics are invariant to hand scale and image aspect; mirrored position agrees', () => {
+  for (const aspect of [.6, 1, 16 / 9]) for (const scale of [.5, 1, 1.5]) {
+    const e = createGestureEngine({ mirrored: false })
+    const hand = e.update(gestureFrame(0, [syntheticHand({ ratio: .25, aspect, scale })], aspect)).hands[0]
+    assert.ok(Math.abs(hand.normalizedPinchDistance - .25) < 1e-12)
+    assert.ok(Math.abs(hand.handSize - .19 * scale) < 1e-12)
+    assert.equal(hand.pinch, 'start')
+    assert.equal(hand.position.x, 0)
+    assert.ok(Math.abs(hand.position.y - (1 - (.4 - .08 * scale) * 2)) < 1e-12)
+  }
+  const e = createGestureEngine({ mirrored: false })
+  const raw = e.update(gestureFrame(0, [syntheticHand({ x: .2 })])).hands[0].position
+  e.configure({ mirrored: true })
+  const mirror = e.update(gestureFrame(10, [syntheticHand({ x: .2 })])).hands[0].position
+  assert.ok(Math.abs(mirror.x + raw.x) < 1e-12); assert.equal(mirror.y, raw.y)
+})
+test('pinch hysteresis emits one start/release, holds through threshold jitter, ignores replayed frames', () => {
+  const e = createGestureEngine({ pinchSmoothingMs: 0 })
+  const step = (t, ratio) => e.update(gestureFrame(t, [syntheticHand({ ratio })]))
+  assert.deepEqual(pinchEvents(step(0, .6)), [])
+  assert.deepEqual(pinchEvents(step(100, .25)), ['pinch-start'])
+  for (const [t, ratio] of [[200, .29], [300, .4], [400, .27]]) {
+    const r = step(t, ratio); assert.equal(r.hands[0].pinch, 'hold'); assert.deepEqual(pinchEvents(r), [])
+  }
+  const repeated = step(400, .9); assert.equal(repeated.accepted, false); assert.equal(repeated.events.length, 0)
+  assert.deepEqual(pinchEvents(step(500, .5)), ['pinch-release'])
+  assert.deepEqual(pinchEvents(step(600, .5)), [])
+  assert.deepEqual(pinchEvents(step(550, .1)), [])
+})
+test('stable hand IDs survive reordered detections, label flicker, and a predicted crossing', () => {
+  const e = createGestureEngine({ positionSmoothingMs: 0 })
+  const left = x => syntheticHand({ x, label: 'Left' }), right = x => syntheticHand({ x, label: 'Right' })
+  const first = e.update(gestureFrame(0, [left(.2), right(.8)]))
+  const leftId = first.hands[0].id, rightId = first.hands[1].id
+  const reordered = e.update(gestureFrame(100, [right(.65), left(.35)]))
+  assert.equal(reordered.hands.find(h => h.handedness === 'Left').id, leftId)
+  assert.equal(reordered.hands.find(h => h.handedness === 'Right').id, rightId)
+  const crossed = e.update(gestureFrame(200, [right(.48), left(.52)]))
+  assert.equal(crossed.hands.find(h => h.handedness === 'Left').id, leftId)
+  assert.equal(crossed.hands.find(h => h.handedness === 'Right').id, rightId)
+  const single = createGestureEngine()
+  const id = single.update(gestureFrame(0, [left(.3)])).hands[0].id
+  assert.equal(single.update(gestureFrame(100, [right(.31)])).hands[0].id, id)
+})
+test('dropouts suspend activity, retain ID briefly, then release and lose once; timeout/reset are safe', () => {
+  const e = createGestureEngine({ pinchSmoothingMs: 0 })
+  const start = e.update(gestureFrame(0, [syntheticHand({ ratio: .2 })])); const id = start.hands[0].id
+  const missing = e.update(gestureFrame(100, []))
+  assert.equal(missing.hands[0].present, false); assert.equal(missing.hands[0].pinching, false)
+  assert.equal(missing.events.length, 0)
+  const recovered = e.update(gestureFrame(200, [syntheticHand({ ratio: .2 })]))
+  assert.equal(recovered.hands[0].id, id); assert.equal(recovered.hands[0].pinch, 'hold'); assert.equal(recovered.events.length, 0)
+  const lost = e.advance(501)
+  assert.deepEqual(lost.events.map(e => e.type), ['pinch-release', 'tracking-lost'])
+  assert.equal(lost.hands.length, 0); assert.equal(e.advance(700).events.length, 0)
+  const fresh = e.update(gestureFrame(800, [syntheticHand({ ratio: .2 })]))
+  assert.notEqual(fresh.hands[0].id, id)
+  assert.deepEqual(e.reset().events.map(e => e.type), ['pinch-release', 'tracking-lost'])
+  assert.equal(e.reset().events.length, 0)
+  assert.equal(e.update(gestureFrame(0, [syntheticHand()])).accepted, true)
+})
+test('time-based position smoothing reduces jitter and agrees across sample rates', () => {
+  const run = hz => {
+    const e = createGestureEngine({ mirrored: false, associationMaxDistance: 1 })
+    e.update(gestureFrame(0, [syntheticHand({ x: .2 })]))
+    let result
+    for (let i = 1; i <= hz; i++) result = e.update(gestureFrame(i * 1000 / hz, [syntheticHand({ x: .4 })]))
+    return result.hands[0].position.x
+  }
+  assert.ok(Math.abs(run(30) - run(120)) < 1e-6)
+  const e = createGestureEngine({ mirrored: false })
+  e.update(gestureFrame(0, [syntheticHand({ x: .2 })]))
+  const next = e.update(gestureFrame(10, [syntheticHand({ x: .3 })])).hands[0]
+  assert.ok(next.position.x > -.6 && next.position.x < -.4)
+})
+test('gesture settings and malformed measurements are validated without false pinches', () => {
+  assert.ok(DEFAULT_GESTURE_SETTINGS.pinchStart < DEFAULT_GESTURE_SETTINGS.pinchRelease)
+  assert.throws(() => createGestureEngine({ pinchStart: .5, pinchRelease: .4 }), RangeError)
+  const e = createGestureEngine()
+  assert.throws(() => e.configure({ positionSmoothingMs: -1 }), RangeError)
+  assert.throws(() => e.update(gestureFrame(NaN, [])), RangeError)
+  assert.throws(() => e.update(gestureFrame(0, [], 0)), RangeError)
+  const zero = syntheticHand({ scale: 0 }), invalid = syntheticHand(); invalid.landmarks[8].x = NaN
+  const r = e.update(gestureFrame(0, [zero, invalid])); assert.equal(r.hands.length, 0); assert.equal(r.events.length, 0)
+  assert.equal(e.update(gestureFrame(100, [syntheticHand({ confidence: .1 })])).hands.length, 0)
+})
+
+test('sensitivity presets remain valid and can tune a live engine without resetting IDs', async () => {
+  const { GESTURE_SENSITIVITY_PRESETS } = await import(moduleURL('src/gestures/engine.ts'))
+  for (const preset of Object.values(GESTURE_SENSITIVITY_PRESETS)) assert.doesNotThrow(() => createGestureEngine(preset))
+  const e = createGestureEngine({ pinchSmoothingMs: 0 })
+  const before = e.update(gestureFrame(0, [syntheticHand({ ratio: .3 })]))
+  assert.equal(before.hands[0].pinching, false)
+  e.configure(GESTURE_SENSITIVITY_PRESETS.gentle)
+  const after = e.update(gestureFrame(100, [syntheticHand({ ratio: .3 })]))
+  assert.equal(after.hands[0].id, before.hands[0].id)
+  assert.deepEqual(pinchEvents(after), ['pinch-start'])
 })
