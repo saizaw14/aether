@@ -129,7 +129,7 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
         if (event.data.type === 'result') {
           if (timeout) clearTimeout(timeout)
           busy = false
-          try { deps.onTracking?.({ hands: event.data.hands ?? [], timestamp: event.data.timestamp }, event.data.image) }
+          try { deps.onTracking?.({ hands: event.data.hands ?? [], timestamp: event.data.timestamp, aspectRatio: event.data.aspectRatio }, event.data.image) }
           finally { event.data.image?.close() }
           if (phase !== 'ready') emit({ phase: 'ready', permission, message: 'Camera ready · frames processed locally.' })
         }

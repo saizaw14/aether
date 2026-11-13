@@ -26,7 +26,7 @@ self.onmessage = async (event: MessageEvent<{ type: string; image?: ImageBitmap;
         confidence: result.handedness[i]?.[0]?.score ?? 0,
       }))
       // Return the exact analyzed frame, so the overlay cannot drift onto a newer video frame.
-      self.postMessage({ type: 'result', hands, timestamp, image }, { transfer: [image] })
+      self.postMessage({ type: 'result', hands, timestamp, aspectRatio: image.width / image.height, image }, { transfer: [image] })
       image = undefined // Ownership transferred to the main thread, which closes it after drawing.
     }
   } catch {

@@ -53,7 +53,7 @@ The optional Google Fonts stylesheet has local sans-serif fallbacks. Particle re
 
 ## Next milestone
 
-Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle, two-hand landmark tracking, and an optional mirrored overlay preview are implemented. Gesture-to-particle mapping, sound, recording, accounts, and backend services remain future work.
+Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle, two-hand landmark tracking, and an optional mirrored overlay preview are implemented. The reusable gesture engine interprets hand position and pinch transitions. Connecting those outputs to particle attraction/scale/rotation, sound, recording, accounts, and backend services remains future work.
 
 ## Verification
 
@@ -124,3 +124,55 @@ Compatibility was checked against the current [official Hand Landmarker web guid
 Verification: lint/build pass and `npm run verify` passes ten test groups. New tests cover one inference request in flight, decoded-frame deduplication, stale-image cleanup, two skeletons, and mirror/input coordinate agreement. Real development HTTP checks returned 200 for page, worker, JS runtime, WASM (`application/wasm`), and model. Both public and production directories contain the expected runtime and checksum-verified model. These checks do not establish real inference performance or camera accuracy.
 
 Manual checks still needed: show one hand then two; move toward each edge in mirrored/unmirrored views; check all joints follow the hands; hide/show preview while tracking; remove both hands; disable/re-enable while processing; test production hosting on a non-root base path. Browser visual/hardware QA could not run because computer-use permission is unavailable.
+
+
+## Reusable gesture engine
+
+`src/gestures/engine.ts` interprets landmarks independently of React, the camera runtime, and Three.js. It exposes `createGestureEngine(settings)`, `update(frame)`, `advance(timestamp)`, `configure(settings)`, `reset()`, and a copied `settings` snapshot. The engine has no internal timers or side effects.
+
+`CameraControls` feeds each tracking result into the engine and exposes an optional `onGestures(result)` consumer callback. The camera panel shows stable hand IDs and open/pinching state, and provides Gentle/Balanced/Precise sensitivity presets. This milestone does not connect gestures to particle rendering; mouse control remains unchanged.
+
+Each result contains:
+
+- `hands`: stable ID, immediate `present` flag, handedness/confidence, smoothed interaction position, thumb/index distance, hand size, raw and smoothed hand-normalized pinch distance, `pinching`, and `pinch` phase (`idle`, `start`, `hold`, `release`).
+- `events`: one-time `tracking-acquired`, `pinch-start`, `pinch-release`, and `tracking-lost` transitions, with hand IDs and timestamps. Release/loss reasons distinguish opening, tracking loss, and reset. Hold is continuous state, **not** a repeated action event.
+- `accepted`: false for duplicate/out-of-order frames. Such results contain no events and cannot replay a start/release.
+
+Interaction position is the midpoint of thumb tip (4) and index tip (8). Position smoothing happens in unmirrored camera coordinates, then uses the shared mirror transform to produce `[-1,1]`, Y-up coordinates. Mirror changes therefore do not animate the pointer through the middle of the scene. Results are clamped to the interaction viewport.
+
+Distance uses aspect-corrected normalized XYZ coordinates (X/Z scaled by camera aspect ratio). Hand size is the average of index-to-pinky MCP span (5→17) and wrist-to-middle MCP length (0→9). Pinch distance divided by that size is dimensionless; no gesture thresholds use raw pixels. The worker supplies the actual analyzed frame’s aspect ratio. The engine requires a positive `aspectRatio` on every input, rather than inferring dimensions from a preview element.
+
+Default settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `pinchStart` | 0.28 | Start at or below this smoothed pinch/hand-size ratio. |
+| `pinchRelease` | 0.42 | Release at or above this ratio; hysteresis avoids chatter. |
+| `positionSmoothingMs` | 80 | Exponential movement smoothing time constant; 0 disables. |
+| `pinchSmoothingMs` | 35 | Exponential ratio smoothing; 0 disables. |
+| `trackingLossMs` | 300 | Identity grace period and confirmed-loss timeout. |
+| `associationMaxDistance` | 0.4 | Maximum predicted palm displacement in aspect-corrected normalized image units. |
+| `handednessPenalty` | 0.12 | Soft identity-matching penalty for a changed handedness label. |
+| `minHandConfidence` | 0.5 | Minimum supplied hand confidence (currently MediaPipe’s handedness score, not independent tracking certainty). |
+| `mirrored` | true | Match the mirrored preview/input convention. |
+
+Gentle starts at 0.34 and releases at 0.50 with 100 ms movement smoothing; Precise uses 0.20/0.34 and 65 ms. `configure` validates settings and preserves tracked IDs; it rejects non-finite values, invalid ranges, and start thresholds at/above release thresholds. Runtime sensitivity changes can intentionally trigger a transition on the next valid observation.
+
+For a consumer:
+
+```ts
+const gestures = createGestureEngine({ mirrored: true })
+// In a camera result callback; timestamp is monotonic capture time in milliseconds:
+const result = gestures.update({ hands, timestamp, aspectRatio })
+// Dispatch discrete actions ONLY from result.events, not on every held frame.
+const starts = result.events.filter(event => event.type === 'pinch-start')
+// Continuous gathering can instead read hand.present && hand.pinching.
+```
+
+Association globally matches both detections to predicted palm locations with soft handedness and size-change costs, independently of detection order. Small label flickers and brief dropouts preserve IDs. Completely overlapping/occluded hands are inherently ambiguous; these heuristics cannot guarantee anatomical identity under all crossings.
+
+On the first missing/invalid observation, a hand is immediately `present: false` and inactive, retaining its ID and internal latch briefly. Reappearance during the grace period resumes hold without another start action. Confirmed loss emits one release (if needed) and one lost event, then removes the track. Reacquisition after timeout receives a new ID. Invalid/degenerate hands are treated as missing. `reset()` emits final release/lost events once, clears state, and allows a fresh timestamp sequence without reusing IDs.
+
+If inference stalls, call `advance(now)` using the **same monotonic millisecond clock** to expire old tracks. All engine calls must progress in time; older results are ignored. The camera adapter checks for stalled results on a cleaned-up 100 ms interval and calls `advance` only after a full result timeout, so normal asynchronous inference is not rejected by a continuously advancing clock.
+
+Verification: `npm run verify` now contains 17 test groups, including scale/aspect invariance, mirrored positions, pinch hysteresis and one-time events, duplicate/out-of-order frames, reordered/crossing hands, label flicker, temporary loss/reacquisition, confirmed loss/reset, 30/120 Hz smoothing agreement, invalid inputs, and live sensitivity changes. Lint and production build also pass (the existing bundle-size advisory remains). Real-camera gesture calibration and the new sensitivity selector still require browser/hardware testing; prior browser access was unavailable.
