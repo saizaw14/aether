@@ -48,7 +48,8 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
   let stopped = false
   const resize = () => {
     const { width, height } = host.getBoundingClientRect()
-    camera.aspect = width / Math.max(height, 1)
+    if (width <= 0 || height <= 0) return
+    camera.aspect = width / height
     // Give portrait screens enough room for the entire formation.
     camera.position.z = camera.aspect < 1 ? 16 / camera.aspect : 16
     camera.updateProjectionMatrix()

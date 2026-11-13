@@ -57,4 +57,34 @@ Add opt-in webcam hand tracking through a separate input adapter: hand position,
 
 ## Verification
 
-`npm run lint` and `npm run build` pass. A direct simulation check confirmed deterministic finite layouts, gathering consistency at 30/144 Hz, release recovery, and formation convergence. The build reports a bundle-size advisory for Three.js. Browser visual and pointer testing could not run in this environment because computer-use permission was unavailable; verify glow, mouse drag/release, fullscreen, narrow layouts, and reduced-motion behavior locally.
+Run `npm run verify` for the repeatable Node contract tests in `scripts/verify.mjs`.
+
+Checks performed on November 13, 2026:
+
+| Check | Result and scope |
+| --- | --- |
+| `npm run lint` | Passed. |
+| `npm run build` | Passed; Three.js bundle-size advisory remains. |
+| `npm run verify` | Four test groups passed. |
+| Nebula ↔ Galaxy | Both simulation directions converge; renderer target switching exercised with a mocked GPU. |
+| Attraction/release | Local gathering, zero strength, return to formation, and 30/144 Hz consistency checked in simulation. |
+| Mouse events | Normalized coordinates, drag updates, primary-button/pointer ownership, release outside, cancellation, blur, reset, and listener removal checked with event doubles. |
+| Resize | Portrait camera aspect/distance, pixel-density cap, and zero-width guard checked with mocked ResizeObserver/GPU. |
+| Reset | Renderer returns to Nebula after switching; mouse adapter releases active attraction. React button wiring reviewed in source. |
+| Cleanup/remount | Canvas and animation callback counts, observer disconnection, geometry/material/renderer disposal checked with mocked GPU. |
+| Fullscreen | Request/exit, change listener, and failure-message wiring reviewed in source only. Native behavior untested. |
+| Browser rendering | Blocked: computer-use permission unavailable. No real WebGL rendering or visual interaction test was performed. |
+
+Fixes made during verification: an unrelated pointer no longer moves or releases an active drag, release outside the canvas hides the marker, reset/blur/disposal release pointer capture, and zero-size resize measurements cannot produce an invalid camera. Common swirl trigonometry is calculated once per frame.
+
+Manual browser checklist (`npm run dev`, then open Vite's local URL):
+
+- Confirm both formations render with readable controls and no browser console errors.
+- Switch repeatedly in both directions, including during a drag; confirm smooth morphs.
+- Gather near and far from the center, release outside the canvas, and switch window focus while holding. Confirm particles return and no attraction gets stuck.
+- Change strength to 0% and 100%; reset from Galaxy while gathering. Confirm Nebula and 65% are restored.
+- Resize across wide, narrow, and short windows; check layout, clipping, marker alignment, and particle visibility.
+- Enter fullscreen, exit via its button, then enter again and exit with Escape. Confirm the label and canvas size follow.
+- Enable reduced motion; confirm ambient movement stops while controls remain usable.
+
+These automated tests validate logic and lifecycle contracts; they do not establish shader correctness, frame rate, visual quality, native pointer capture, or fullscreen behavior in a browser.
