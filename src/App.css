@@ -435,3 +435,14 @@ footer {
 @media(max-width: 650px) {
   .camera-panel { bottom: 265px; }
 }
+.preview-options { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; font-size: 10px; color: #b2bccb; }
+.preview-options label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.preview-options input { accent-color: #97dce3; }
+.tracking-preview { position: relative; margin-top: 12px; border: 1px solid #ffffff18; border-radius: 8px; overflow: hidden; background: #080b10; }
+.tracking-preview[hidden] { display: none; }
+.tracking-preview canvas { display: block; width: 100%; height: auto; }
+.tracking-preview span { display: block; padding: 6px; font-size: 9px; color: #c0d5e4; }
+.camera-hands { font-size: 10px; color: #a1dbd6; margin: 12px 0 0; }
+.camera-panel { max-height: calc(100svh - 230px); overflow-y: auto; }
+@media(max-width: 850px) { .camera-panel { max-height: calc(100svh - 330px); } }
+@media(max-width: 650px) { .camera-panel { max-height: calc(100svh - 365px); } }

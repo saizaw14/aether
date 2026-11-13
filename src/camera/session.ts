@@ -1,3 +1,5 @@
+import type { TrackingFrame } from './landmarks'
+
 export type CameraPhase = 'off' | 'permission' | 'initializing' | 'loading' | 'ready' | 'failure'
 export interface CameraState {
   phase: CameraPhase
@@ -12,6 +14,8 @@ interface Dependencies {
   bitmap: (video: HTMLVideoElement) => Promise<ImageBitmap>
   schedule: (callback: FrameRequestCallback) => number
   cancel: (id: number) => void
+  assetBase?: string
+  onTracking?: (frame: TrackingFrame, image?: ImageBitmap) => void
 }
 export function cameraFailure(error: unknown, stage: CameraPhase): Pick<CameraState, 'message' | 'recovery'> {
   const name = error instanceof Error ? error.name : ''
@@ -28,7 +32,7 @@ export function cameraFailure(error: unknown, stage: CameraPhase): Pick<CameraSt
     message: 'The camera could not be opened. It may be in use.', recovery: 'Close other apps or tabs using the camera, check system permissions, then try again.',
   }
   if (stage === 'loading') return {
-    message: 'The hand model could not load.', recovery: 'Check your internet connection and allow model downloads from jsDelivr and Google Storage, then retry.',
+    message: 'The hand model could not load.', recovery: 'Check your internet connection and reload the page to fetch Aether’s local tracking assets, then retry.',
   }
   return { message: 'Camera tracking could not start or was interrupted.', recovery: 'Check your camera connection and browser support, then retry. Mouse mode remains available.' }
 }
@@ -64,6 +68,7 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
       stream?.getTracks().forEach(track => { track.removeEventListener('ended', ended); track.stop() })
       cancelVideo?.()
       video.pause(); video.srcObject = null
+      deps.onTracking?.({ hands: [], timestamp: 0 })
     }
     const fail = (error: unknown) => {
       if (!current()) return
@@ -112,8 +117,8 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
           watchdog(15000)
         } catch (error) { fail(error) }
       }
-      worker.onmessage = (event: MessageEvent<{ type: string; message?: string }>) => {
-        if (!current()) return
+      worker.onmessage = (event: MessageEvent<TrackingFrame & { type: string; message?: string; image?: ImageBitmap }>) => {
+        if (!current()) { event.data.image?.close(); return }
         if (event.data.type === 'error') { fail(new Error(event.data.message)); return }
         if (event.data.type === 'loaded') {
           if (timeout) clearTimeout(timeout)
@@ -124,10 +129,12 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
         if (event.data.type === 'result') {
           if (timeout) clearTimeout(timeout)
           busy = false
+          try { deps.onTracking?.({ hands: event.data.hands ?? [], timestamp: event.data.timestamp }, event.data.image) }
+          finally { event.data.image?.close() }
           if (phase !== 'ready') emit({ phase: 'ready', permission, message: 'Camera ready · frames processed locally.' })
         }
       }
-      worker.postMessage({ type: 'load' })
+      worker.postMessage({ type: 'load', assetBase: deps.assetBase })
     } catch (error) { fail(error) }
   }
   return { enable, disable, dispose() { disposed = true; stop() } }
