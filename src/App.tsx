@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import ParticleScene from './ParticleScene'
 import CameraControls from './CameraControls'
-import { createHandInput } from './input/hand'
+import { createHandControls } from './input/controls'
 import type { Formation } from './particles/formations'
 import './App.css'
 
 function App() {
-  const [handInput] = useState(() => createHandInput())
+  const [transformMode, setTransformMode] = useState(false)
+  const [handInput] = useState(() => createHandControls(setTransformMode))
   const [handMode, setHandMode] = useState(false)
   const [formation, setFormation] = useState<Formation>('nebula')
   const [strength, setStrength] = useState(0.65)
@@ -32,7 +33,7 @@ function App() {
     <div className="vignette" aria-hidden="true" />
     <header className="masthead">
       <a href="#" className="wordmark" aria-label="Aether home"><span className="brand-symbol">✧</span> aether<span className="brand-period">.</span></a>
-      <div className="mode"><span /> {handMode ? 'Hand mode' : 'Mouse mode'} <span className="mode-icon">↖</span></div>
+      <div className="mode"><span /> {transformMode ? 'Two-hand transform' : handMode ? 'Hand mode' : 'Mouse mode'} <span className="mode-icon">↖</span></div>
     </header>
     <section className="intro" aria-label="About Aether"><p className="eyebrow">AN INTERACTIVE PARTICLE UNIVERSE</p><h1>Shape the universe<br />with your hands.</h1><p className="intro-description">A little curiosity. Infinite possibilities.</p></section>
     <div className="scene-caption" aria-hidden="true"><span className="caption-line" /><span>{formation === 'nebula' ? '01 / NEBULA' : '02 / GALAXY'}</span><small>5,000 points of possibility</small></div>
@@ -46,7 +47,7 @@ function App() {
       <div className="strength-control"><label className="control-label" htmlFor="strength">INTERACTION <output htmlFor="strength">{Math.round(strength * 100)}%</output></label><input id="strength" type="range" min="0" max="1" step="0.01" value={strength} aria-label="Interaction strength" onChange={e => setStrength(Number(e.target.value))} /></div>
       <div className="dock-actions"><button className="icon-button" onClick={reset} title="Reset universe" aria-label="Reset universe">↺</button><button className="icon-button fullscreen-button" onClick={toggleFullscreen} title={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>{fullscreen ? '⊡' : '⛶'}</button></div>
     </section>
-    <footer><p className="instruction"><span className="mouse-outline" aria-hidden="true" />{handMode ? 'Open your hand, then pinch and move to gather. Mouse drag also works.' : 'Hold and drag to gather particles.'}</p><span className="milestone">EXPERIMENT 001 <span>·</span> THE BEGINNING</span></footer>
+    <footer><p className="instruction"><span className="mouse-outline" aria-hidden="true" />{handMode ? 'Pinch one hand to gather; pinch both to scale and rotate. Mouse drag also works.' : 'Hold and drag to gather particles.'}</p><span className="milestone">EXPERIMENT 001 <span>·</span> THE BEGINNING</span></footer>
     <p className="notice" role="status">{notice}</p>
   </main>
 }
