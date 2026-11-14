@@ -110,7 +110,7 @@ export default function CameraControls({ onGestures, onCameraState }: Props) {
     </div>
     <p className="camera-hands" role="status">{state.phase === 'ready' ? `${handCount} ${handCount === 1 ? 'hand' : 'hands'} detected` : 'Tracks up to two hands'}</p>
     {gestureSummary && <p className="camera-hands" role="status">{gestureSummary}</p>}
-    <p className="camera-privacy">Video only. Frames stay on this device.<br />{state.phase === 'ready' ? 'Open your hand, then pinch and move to gather. Mouse drag also works.' : 'Mouse controls remain available.'}</p>
+    <p className="camera-privacy">Video only. Frames stay on this device.<br />{state.phase === 'ready' ? 'Open hands first. Pinch one to gather, or both to scale and rotate.' : 'Mouse controls remain available.'}</p>
     <video ref={video} muted playsInline className="camera-source" aria-hidden="true" />
   </section>
 }

@@ -53,7 +53,7 @@ The optional Google Fonts stylesheet has local sans-serif fallbacks. Particle re
 
 ## Next milestone
 
-Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle, two-hand landmark tracking, and an optional mirrored overlay preview are implemented. The reusable gesture engine interprets hand position and pinch transitions. One-hand hover and pinch attraction now control the particles through the shared input layer. Two-hand scale/rotation, sound, recording, accounts, and backend services remain future work.
+Add opt-in webcam hand tracking through a separate input adapter: hand position, pinch-to-gather, then two-hand scale/rotation. Camera lifecycle, two-hand landmark tracking, and an optional mirrored overlay preview are implemented. The reusable gesture engine interprets hand position and pinch transitions. One-hand hover and pinch attraction now control the particles through the shared input layer. Two-hand relative screen-based scale/rotation is also implemented. Sound, recording, accounts, and backend services remain future work.
 
 ## Verification
 
@@ -107,7 +107,7 @@ Manual camera checks still required: allow/deny permission; unplug a camera; tes
 
 ## Two-hand tracking and preview
 
-The worker uses `@mediapipe/tasks-vision` **1.2.3**, pinned exactly, in `VIDEO` mode with `numHands: 2`. It returns 21 normalized landmarks per detected hand, handedness, confidence, and the inference timestamp. The optional **Show camera preview** checkbox displays a canvas with both hand skeletons (cyan/violet); **Mirror view** defaults on. Neither preview checkbox changes camera permission or restarts inference. Mouse particle controls remain active alongside one-hand attraction. Two-hand scale/rotation are the next integration step.
+The worker uses `@mediapipe/tasks-vision` **1.2.3**, pinned exactly, in `VIDEO` mode with `numHands: 2`. It returns 21 normalized landmarks per detected hand, handedness, confidence, and the inference timestamp. The optional **Show camera preview** checkbox displays a canvas with both hand skeletons (cyan/violet); **Mirror view** defaults on. Neither preview checkbox changes camera permission or restarts inference. Mouse particle controls remain active alongside one-hand attraction. Pinching both hands enables relative screen-based scale/rotation.
 
 The preview displays the exact analyzed frame returned by the worker, not a newer live video frame. The main thread closes each transferred image after drawing (including stale results after cancellation). Landmark coordinates remain raw/unmirrored in `TrackingFrame`; `displayPoint` applies `x → 1−x` for mirrored views, and `interactionPoint` maps the same displayed coordinates to the renderer’s `[-1,1]`, Y-up input space. No crop or `object-fit: cover` transform is applied, so changing preview size preserves landmark alignment. These helpers also supply the mirrored particle interaction coordinates.
 
@@ -186,7 +186,7 @@ Verification: `npm run verify` now contains 17 test groups, including scale/aspe
 4. Open/release to let attraction fade and particles return smoothly to the selected formation.
 5. If tracking drops, keep or reopen your hand before pinching again. A hand that appears already closed cannot start attraction.
 
-The lowest stable hand ID is selected initially. The adapter keeps that primary hand through brief dropouts even if a second hand is visible. After confirmed loss, another visible hand can become primary, but must open and pinch deliberately. Two-hand scale/rotation is not implemented.
+The lowest stable hand ID is selected initially. The adapter keeps that primary hand through brief dropouts even if a second hand is visible. After confirmed loss, another visible hand can become primary, but must open and pinch deliberately. Pinching both armed hands takes priority and enables two-hand transformation (described below).
 
 `src/input/types.ts` defines the shared normalized `InteractionInput` and sampled `InteractionSource` contract. Mouse and hand adapters both produce X/Y position, visibility, and activity; optional continuous attraction/opacity weights allow loss/release fading without separate particle physics. `src/input/hand.ts` interprets gesture output for one-hand control. `App` owns the stable adapter object, CameraControls updates it through callbacks, and the renderer samples it outside React state. The renderer owns a single marker for both inputs and applies the same camera-plane mapping and attraction simulation to either source.
 
@@ -201,3 +201,21 @@ Safety and smoothing behavior:
 Verification on November 14, 2026: lint, production build, `git diff --check`, and **23 automated test groups pass**. New tests cover open hover, actual engine→adapter pinch/drag/release, smooth particle recovery through the shared physics, loss fading at a frozen point, held-closed reacquisition prevention, stale input/reset/re-enable safety, stable primary selection, mouse priority, 30/120 Hz fade agreement, and renderer consumption/marker mapping using a mocked GPU. The existing bundle-size advisory remains.
 
 Browser/hardware testing was attempted but computer-use permission was unavailable. Still check live camera marker alignment, gathering/release feel, partial occlusion and reacquisition while closed, opening then repinching, movement near camera edges, two visible hands with the primary temporarily hidden, mouse override, reset while pinching, camera disable, and mirrored/unmirrored preview consistency.
+
+
+## Two-hand scale and rotation
+
+Open both hands once after acquisition, then pinch both to enter **Two-hand transform** mode. Move them apart/together to scale the formation, or turn the line between the hands to rotate it. These are relative screen-based controls, not physical-depth measurements. The header identifies the active transform mode.
+
+- Entry captures the current displayed controller scale/rotation and the hands’ current distance/angle. Entering/re-entering has no offset jump.
+- Distance ratios scale relative to the captured value. Scale is clamped to **0.5×–2×**. Rotation accumulates the smallest signed angular changes across ±π, so crossing the wrap boundary does not spin the formation. Stable hand IDs fix vector direction independently of detection order.
+- Coordinates use mirrored, smoothed X/Y positions only. X is corrected for the actual canvas aspect ratio; the controller rebases its reference on viewport aspect changes without changing the chosen transform. Hands closer than 0.12 normalized height units have an unreliable angle, so transformation exits safely.
+- Releasing either pinch, losing either hand, changing the hand pair, stale results (250 ms), camera disable, or gesture reset ends/rebases the mode as appropriate. The last chosen transform is retained. A lost/reacquired hand must open before it can participate again.
+- Active two-hand transformation suppresses one-hand attraction, including any fading attraction tail. Exiting cannot silently turn the remaining held pinch into gathering: open and freshly pinch to resume one-hand attraction. A deliberate mouse drag interrupts hand control while retaining the chosen formation scale/rotation.
+- **Reset** restores scale 1×, rotation 0, Nebula, and default strength. Formation switching otherwise retains the chosen transform. Motion eases with a 90 ms controller time constant and the existing particle follow simulation; reduced-motion users retain controllable transforms without ambient drift.
+
+Architecture: `src/input/transform.ts` is a pure two-hand controller with reference capture, validation, clamping, angular unwrapping, and `update/sample/interrupt/reset` APIs. `src/input/controls.ts` arbitrates transformation versus one-hand input. The shared sampled input carries an optional formation transform. The renderer applies that transform to formation **targets** through `stepParticles`; it does not scale/rotate the mesh. Mouse/hand attraction therefore remains in world space with correct marker alignment even after the formation is transformed. The controller exposes configurable bounds/timings via `createTwoHandTransform(settings)` and emits only discrete mode-change callbacks, not React updates per animation frame.
+
+Verification: lint and production build pass, with the existing bundle-size advisory. **30 automated test groups pass**, including reference capture/re-entry, scale clamps, ±π wraparound, hand-order changes, screen aspect/resize rebasing, tracking loss/stale input/degenerate separation, safe closed-hand reacquisition, transform priority and graceful exit, transformed formation convergence with world-space attraction, frame-time smoothing, and renderer forwarding of transformation to particle targets. `git diff --check` also passes.
+
+Live browser testing was attempted but computer-use permission is unavailable. Manual checks still needed: enter with hands at different separations/angles; scale through both limits; rotate across the angle boundary; release either pinch; hide either hand and reacquire closed; switch formations during transformation; resize; use mouse override; disable camera; and Reset. Confirm each entry starts from the current pose and exits preserve it.

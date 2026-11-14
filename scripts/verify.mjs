@@ -481,10 +481,144 @@ test('renderer consumes hand input for the marker and particles; mouse capture o
   Object.assign(value, { active: false, attraction: 0 })
   for (let i = 61; i <= 240; i++) tick(1000 + i * 1000 / 60)
   assert.ok(error(original, rendered.geometry.attributes.position.array) < .001)
+  Object.assign(value, { transform: { active: true, scale: 1.5, rotation: Math.PI / 4 } })
+  for (let i = 241; i <= 420; i++) tick(1000 + i * 1000 / 60)
+  const transformedTarget = original.slice(), cos = Math.cos(Math.PI / 4), sin = Math.sin(Math.PI / 4)
+  for (let i = 0; i < original.length; i += 3) {
+    transformedTarget[i] = (original[i] * cos - original[i + 1] * sin) * 1.5
+    transformedTarget[i + 1] = (original[i] * sin + original[i + 1] * cos) * 1.5
+    transformedTarget[i + 2] = original[i + 2] * 1.5
+  }
+  assert.ok(error(transformedTarget, rendered.geometry.attributes.position.array) < .001)
+  value.transform = undefined
   Object.assign(value, { active: true, attraction: 1 })
   pointer(host.children[0], 'pointerdown')
-  tick(5100)
+  tick(8100)
   assert.ok(resets > 0); assert.equal(value.attraction, 0)
   assert.equal(marker.style.transform, 'translate(400px, 300px)')
   renderer.dispose(); assert.equal(frames.size, 0)
+})
+
+const { createTwoHandTransform } = await import(moduleURL('src/input/transform.ts'))
+const { createHandControls } = await import(moduleURL('src/input/controls.ts'))
+function transformResult(timestamp, points, pinches = [true, true], ids = [1, 2]) {
+  return { timestamp, accepted: true, events: [], hands: points.map((position, i) => ({
+    id: ids[i], position, present: true, handedness: i ? 'Right' : 'Left', confidence: .99,
+    pinchDistance: pinches[i] ? .03 : .1, handSize: .2,
+    normalizedPinchDistance: pinches[i] ? .15 : .5, smoothedPinchDistance: pinches[i] ? .15 : .5,
+    pinching: pinches[i], open: !pinches[i], pinch: pinches[i] ? 'start' : 'release',
+  })) }
+}
+const line = (distance = 1, angle = 0) => [
+  { x: -Math.cos(angle) * distance / 2, y: -Math.sin(angle) * distance / 2 },
+  { x: Math.cos(angle) * distance / 2, y: Math.sin(angle) * distance / 2 },
+]
+function startTransform(controller, points = line(), time = 0) {
+  controller.setEnabled(true)
+  controller.update(transformResult(time, points, [false, false]), time)
+  controller.update(transformResult(time + 100, points), time + 100)
+  return controller.sample(time + 100, .1, 1)
+}
+test('two-hand mode captures references, scales relatively, clamps, and retains pose across exits/re-entry', () => {
+  const events = [], t = createTwoHandTransform({ smoothingMs: 0 }, active => events.push(active))
+  const entry = startTransform(t)
+  assert.deepEqual(entry, { active: true, scale: 1, rotation: 0 })
+  t.update(transformResult(200, line(1.5, .3)), 200)
+  const changed = t.sample(200, .1)
+  assert.ok(Math.abs(changed.scale - 1.5) < 1e-12); assert.ok(Math.abs(changed.rotation - .3) < 1e-12)
+  t.update(transformResult(300, line(1.9, .5), [true, false]), 300)
+  const exit = t.sample(300, .1)
+  assert.equal(exit.active, false); assert.equal(exit.scale, changed.scale); assert.equal(exit.rotation, changed.rotation)
+  t.update(transformResult(400, line(.6, -.8)), 400)
+  assert.deepEqual(t.sample(400, .1), { ...changed, active: true }) // New reference; zero jump.
+  t.update(transformResult(500, line(1.8, -.8)), 500); assert.equal(t.sample(500, .1).scale, 2)
+  t.update(transformResult(600, line(.15, -.8)), 600); assert.equal(t.sample(600, .1).scale, .5)
+  assert.deepEqual(events, [true, false, true])
+  t.setEnabled(false); assert.equal(t.sample(650, .1).scale, .5)
+  t.reset(); assert.deepEqual(t.sample(700, .1), { active: false, scale: 1, rotation: 0 })
+})
+test('rotation unwraps across ±π and detection-order reversal does not flip the formation', () => {
+  const t = createTwoHandTransform({ smoothingMs: 0 })
+  startTransform(t, line(1, 179 * Math.PI / 180))
+  const result = transformResult(200, line(1, -179 * Math.PI / 180))
+  result.hands.reverse()
+  t.update(result, 200)
+  const state = t.sample(200, .1)
+  assert.ok(Math.abs(state.rotation - 2 * Math.PI / 180) < 1e-12)
+  t.update(transformResult(300, line(1, -170 * Math.PI / 180)), 300)
+  assert.ok(Math.abs(t.sample(300, .1).rotation - 11 * Math.PI / 180) < 1e-12)
+})
+test('loss, stale input, tiny separation, changed IDs, and already-closed reacquisition exit safely', () => {
+  const t = createTwoHandTransform({ smoothingMs: 0 })
+  startTransform(t)
+  t.update(transformResult(200, line(1.5, .2)), 200)
+  const pose = t.sample(200, .1)
+  const missing = transformResult(300, line()); missing.hands[1].present = false
+  t.update(missing, 300); assert.equal(t.sample(300, .1).active, false)
+  t.update(transformResult(400, line()), 400); assert.equal(t.sample(400, .1).active, false)
+  t.update(transformResult(500, line(), [false, false]), 500)
+  t.update(transformResult(600, line()), 600); assert.equal(t.sample(600, .1).active, true)
+  assert.equal(t.sample(900, .1).active, false) // Result stall, independently of engine callbacks.
+  t.update(transformResult(950, line()), 950); assert.equal(t.sample(950, .1).active, false)
+  t.update(transformResult(1000, line(), [false, false]), 1000)
+  t.update(transformResult(1100, line()), 1100); t.sample(1100, .1)
+  t.update(transformResult(1200, line(.01)), 1200); assert.equal(t.sample(1200, .1).active, false)
+  t.update(transformResult(1300, line(), [true, true], [3, 4]), 1300)
+  const blocked = t.sample(1300, .1)
+  assert.equal(blocked.active, false); assert.equal(blocked.scale, pose.scale)
+  assert.ok(Number.isFinite(blocked.rotation))
+})
+test('screen aspect correction and viewport resize rebase references without jumps', () => {
+  const t = createTwoHandTransform({ smoothingMs: 0 })
+  t.setEnabled(true)
+  t.update(transformResult(0, line(.6), [false, false]), 0)
+  t.update(transformResult(100, line(.6)), 100)
+  t.sample(100, .1, 2)
+  t.update(transformResult(200, line(.6, Math.PI / 2)), 200)
+  const vertical = t.sample(200, .1, 2)
+  assert.equal(vertical.scale, .5); assert.ok(Math.abs(vertical.rotation - Math.PI / 2) < 1e-12)
+  assert.deepEqual(t.sample(210, .01, .7), vertical)
+})
+test('two-hand arbitration suppresses existing attraction, keeps transforms on interrupt, and exits without gathering', () => {
+  const c = createHandControls()
+  c.setEnabled(true)
+  c.update(transformResult(0, line(), [false, false]), 0)
+  c.update(transformResult(100, line(), [true, false]), 100)
+  assert.ok(c.sample(100, .1).attraction > 0)
+  c.update(transformResult(200, line()), 200)
+  const both = c.sample(200, .1)
+  assert.equal(both.transform.active, true); assert.equal(both.attraction, 0); assert.equal(both.active, false)
+  c.update(transformResult(300, line(1.5, .4)), 300)
+  const transformed = c.sample(300, 1).transform
+  assert.ok(transformed.scale > 1.4)
+  c.update(transformResult(400, line(1.5), [true, false]), 400)
+  const exit = c.sample(400, .1)
+  assert.equal(exit.transform.active, false); assert.equal(exit.attraction, 0)
+  assert.equal(exit.transform.scale, transformed.scale)
+  c.interrupt(); assert.equal(c.sample(450, .1).transform.scale, transformed.scale)
+  c.reset(); assert.equal(c.sample(500, .1).transform.scale, 1)
+})
+test('transformed formation targets converge through the existing physics with world-space attraction intact', () => {
+  const positions = new Float32Array([1, 0, 1]), target = positions.slice()
+  const transform = { active: true, scale: 2, rotation: Math.PI / 2 }
+  for (let i = 0; i < 180; i++) stepParticles(positions, target, { ...idle }, 0, 0, 1, 1 / 60, 0, true, transform)
+  assert.ok(Math.abs(positions[0]) < .00001 && Math.abs(positions[1] - 2) < .00001 && Math.abs(positions[2] - 2) < .00001)
+  for (let i = 0; i < 180; i++) stepParticles(positions, target, { ...idle, active: true }, 0, 1, 1, 1 / 60, 0, true, transform)
+  assert.ok(positions[1] < 1.5) // Attraction remains at a world-space point after transforming the target.
+})
+test('transform smoothing is frame-time based and configuration rejects invalid bounds', () => {
+  const run = hz => {
+    const t = createTwoHandTransform(); startTransform(t)
+    let state
+    for (let i = 1; i <= hz; i++) {
+      const time = 100 + i * 1000 / hz
+      t.update(transformResult(time, line(1.5, .6)), time)
+      state = t.sample(time, 1 / hz)
+    }
+    return state
+  }
+  assert.ok(Math.abs(run(30).scale - run(120).scale) < 1e-12)
+  assert.ok(Math.abs(run(30).rotation - run(120).rotation) < 1e-12)
+  assert.throws(() => createTwoHandTransform({ minScale: 2 }), RangeError)
+  assert.throws(() => createTwoHandTransform({ maxScale: NaN }), RangeError)
 })

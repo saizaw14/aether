@@ -1,4 +1,4 @@
-import type { InteractionInput } from '../input/types'
+import type { FormationTransform, InteractionInput } from '../input/types'
 export type { InteractionInput } from '../input/types'
 
 export function createMouseInput(canvas: HTMLCanvasElement) {
@@ -55,16 +55,17 @@ export function createMouseInput(canvas: HTMLCanvasElement) {
 }
 
 export function stepParticles(positions: Float32Array, target: Float32Array, input: InteractionInput,
-  worldX: number, worldY: number, strength: number, dt: number, time: number, reduced: boolean) {
+  worldX: number, worldY: number, strength: number, dt: number, time: number, reduced: boolean, transform?: FormationTransform) {
   const follow = 1 - Math.exp(-dt * (reduced ? 5 : 2.2))
-  const angle = reduced ? 0 : Math.sin(time * 0.08) * 0.14
+  const scale = transform?.scale ?? 1
+  const angle = (reduced ? 0 : Math.sin(time * 0.08) * 0.14) + (transform?.rotation ?? 0)
   const cos = Math.cos(angle), sin = Math.sin(angle)
   for (let i = 0; i < positions.length; i += 3) {
     const phase = i * 0.17
-    const drift = reduced ? 0 : 0.12
-    let x = target[i] * cos - target[i + 1] * sin + Math.sin(time * 0.25 + phase) * drift
-    let y = target[i] * sin + target[i + 1] * cos + Math.cos(time * 0.22 + phase) * drift
-    const z = target[i + 2]
+    const drift = reduced ? 0 : 0.12 * scale
+    let x = (target[i] * cos - target[i + 1] * sin) * scale + Math.sin(time * 0.25 + phase) * drift
+    let y = (target[i] * sin + target[i + 1] * cos) * scale + Math.cos(time * 0.22 + phase) * drift
+    const z = target[i + 2] * scale
     if (input.active) {
       const distance = Math.hypot(positions[i] - worldX, positions[i + 1] - worldY)
       const influence = Math.max(0, 1 - distance / 3.2) * strength * (input.attraction ?? 1) * 0.92

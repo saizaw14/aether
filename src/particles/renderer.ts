@@ -73,14 +73,18 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
     previous = now
     if (!motion.matches) time += dt
     const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.position.z
-    if (mouse.input.active) handSource?.reset()
-    const input = selectInteraction(mouse.sample(), handSource?.sample(now, dt))
+    if (mouse.input.active) {
+      if (handSource?.interrupt) handSource.interrupt()
+      else handSource?.reset()
+    }
+    const hand = handSource?.sample(now, dt, camera.aspect)
+    const input = hand?.transform?.active ? hand : selectInteraction(mouse.sample(), hand)
     marker.style.transform = `translate(${(input.x + 1) * viewportWidth / 2}px, ${(1 - input.y) * viewportHeight / 2}px)`
     marker.style.opacity = String(input.visible ? input.opacity ?? 1 : 0)
     marker.dataset.visible = String(input.visible)
     marker.dataset.active = String(input.active)
     stepParticles(positions, target, input, input.x * halfHeight * camera.aspect,
-      input.y * halfHeight, strength, dt, time, motion.matches)
+      input.y * halfHeight, strength, dt, time, motion.matches, hand?.transform)
     position.needsUpdate = true
     try { renderer.render(scene, camera) } catch { stopped = true; onError(); return }
     frame = requestAnimationFrame(animate)
