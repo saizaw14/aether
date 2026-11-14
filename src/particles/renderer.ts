@@ -2,8 +2,10 @@ import * as THREE from 'three'
 import { generateFormation, PARTICLE_COUNT } from './formations'
 import type { Formation } from './formations'
 import { createMouseInput, stepParticles } from './interaction'
+import { selectInteraction } from '../input/hand'
+import type { InteractionSource } from '../input/types'
 
-export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, onError: () => void) {
+export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, onError: () => void, handSource?: InteractionSource) {
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
@@ -39,16 +41,19 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
   scene.add(points)
   renderer.domElement.setAttribute('aria-label', 'Interactive particle universe. Hold and drag to gather particles.')
   host.appendChild(renderer.domElement)
-  const mouse = createMouseInput(renderer.domElement, marker)
+  const mouse = createMouseInput(renderer.domElement)
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
   let strength = 0.65
   let frame = 0
   let previous = 0
   let time = 0
   let stopped = false
+  let viewportWidth = 1
+  let viewportHeight = 1
   const resize = () => {
     const { width, height } = host.getBoundingClientRect()
     if (width <= 0 || height <= 0) return
+    viewportWidth = width; viewportHeight = height
     camera.aspect = width / height
     // Give portrait screens enough room for the entire formation.
     camera.position.z = camera.aspect < 1 ? 16 / camera.aspect : 16
@@ -68,8 +73,14 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
     previous = now
     if (!motion.matches) time += dt
     const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.position.z
-    stepParticles(positions, target, mouse.input, mouse.input.x * halfHeight * camera.aspect,
-      mouse.input.y * halfHeight, strength, dt, time, motion.matches)
+    if (mouse.input.active) handSource?.reset()
+    const input = selectInteraction(mouse.sample(), handSource?.sample(now, dt))
+    marker.style.transform = `translate(${(input.x + 1) * viewportWidth / 2}px, ${(1 - input.y) * viewportHeight / 2}px)`
+    marker.style.opacity = String(input.visible ? input.opacity ?? 1 : 0)
+    marker.dataset.visible = String(input.visible)
+    marker.dataset.active = String(input.active)
+    stepParticles(positions, target, input, input.x * halfHeight * camera.aspect,
+      input.y * halfHeight, strength, dt, time, motion.matches)
     position.needsUpdate = true
     try { renderer.render(scene, camera) } catch { stopped = true; onError(); return }
     frame = requestAnimationFrame(animate)
@@ -78,9 +89,9 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
   return {
     setFormation(formation: Formation) { target = generateFormation(formation) },
     setStrength(value: number) { strength = value },
-    reset() { mouse.reset(); time = 0; target = generateFormation('nebula'); strength = 0.65 },
+    reset() { mouse.reset(); handSource?.reset(); time = 0; target = generateFormation('nebula'); strength = 0.65 },
     dispose() {
-      stopped = true; cancelAnimationFrame(frame); observer.disconnect(); mouse.dispose()
+      stopped = true; cancelAnimationFrame(frame); observer.disconnect(); mouse.dispose(); handSource?.reset()
       renderer.domElement.removeEventListener('webglcontextlost', lost)
       geometry.dispose(); material.dispose(); renderer.dispose(); renderer.forceContextLoss()
       renderer.domElement.remove()

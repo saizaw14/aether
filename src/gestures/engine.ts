@@ -43,6 +43,8 @@ export interface HandGesture {
   normalizedPinchDistance: number
   smoothedPinchDistance: number
   pinching: boolean
+  /** Confidently open beyond the release threshold; safe to arm a new interaction. */
+  open: boolean
   pinch: 'idle' | 'start' | 'hold' | 'release'
 }
 export interface GestureResult { timestamp: number; accepted: boolean; hands: HandGesture[]; events: GestureEvent[] }
@@ -110,6 +112,7 @@ export function createGestureEngine(initial: Partial<GestureSettings> = {}) {
         pinchDistance: track.measurement.pinchDistance, handSize: track.measurement.handSize,
         normalizedPinchDistance: track.measurement.ratio, smoothedPinchDistance: track.ratio,
         pinching: track.present && track.pinching,
+        open: track.present && track.ratio >= settings.pinchRelease,
         pinch: !track.present ? 'idle' : start ? 'start' : release ? 'release' : track.pinching ? 'hold' : 'idle',
       }
     }),

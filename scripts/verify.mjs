@@ -62,8 +62,8 @@ function pointer(surface, type, props = {}) {
 }
 test('mouse normalization, drag, primary-pointer ownership, release outside, blur, reset, disposal', () => {
   globalThis.window = new Surface()
-  const canvas = new Surface(), marker = new Surface()
-  const mouse = createMouseInput(canvas, marker)
+  const canvas = new Surface()
+  const mouse = createMouseInput(canvas)
   pointer(canvas, 'pointermove')
   assert.equal(mouse.input.x, 0); assert.equal(mouse.input.y, 0)
   pointer(canvas, 'pointerdown', { button: 2 }); assert.equal(mouse.input.active, false)
@@ -350,4 +350,141 @@ test('sensitivity presets remain valid and can tune a live engine without resett
   const after = e.update(gestureFrame(100, [syntheticHand({ ratio: .3 })]))
   assert.equal(after.hands[0].id, before.hands[0].id)
   assert.deepEqual(pinchEvents(after), ['pinch-start'])
+})
+
+const { createHandInput, selectInteraction } = await import(moduleURL('src/input/hand.ts'))
+function oneHandHarness() {
+  const gestures = createGestureEngine({ pinchSmoothingMs: 0, positionSmoothingMs: 0, associationMaxDistance: 1 })
+  const hand = createHandInput(); hand.setEnabled(true)
+  return {
+    hand,
+    send(t, hands) { const result = gestures.update(gestureFrame(t, hands)); hand.update(result, t); return result },
+    sample(t, dt = .1) { return { ...hand.sample(t, dt) } },
+  }
+}
+test('one-hand control: open hover, deliberate pinch/drag, smooth release, shared particle physics', () => {
+  const h = oneHandHarness()
+  h.send(0, [syntheticHand({ x: .3 })])
+  const hover = h.sample(0)
+  assert.equal(hover.active, false); assert.equal(hover.visible, true)
+  assert.ok(Math.abs(hover.x - .4) < 1e-10)
+  h.send(100, [syntheticHand({ x: .3, ratio: .2 })])
+  const pinch = h.sample(100)
+  assert.ok(pinch.attraction > 0 && pinch.attraction < 1)
+  h.send(200, [syntheticHand({ x: .5, ratio: .2 })])
+  const moved = h.sample(200)
+  assert.ok(moved.x < pinch.x && moved.x > -.001)
+  assert.ok(moved.attraction > pinch.attraction)
+  h.send(300, [syntheticHand({ x: .5, ratio: .6 })])
+  const released = h.sample(300)
+  assert.ok(released.attraction < moved.attraction && released.attraction > 0)
+  const target = new Float32Array([1, 0, 0]), positions = target.slice()
+  for (let i = 0; i < 60; i++) stepParticles(positions, target, pinch, 0, 0, 1, 1 / 60, 0, true)
+  assert.ok(positions[0] < .9)
+  for (let i = 1; i <= 300; i++) {
+    const now = 300 + i * 1000 / 60
+    const input = h.hand.sample(now, 1 / 60)
+    stepParticles(positions, target, input, 0, 0, 1, 1 / 60, 0, true)
+  }
+  assert.ok(Math.abs(positions[0] - 1) < .001)
+})
+test('tracking loss fades in place, and reacquisition held closed cannot reactivate attraction', () => {
+  const h = oneHandHarness()
+  h.send(0, [syntheticHand({ x: .3 })]); h.sample(0)
+  h.send(100, [syntheticHand({ x: .3, ratio: .2 })]); const before = h.sample(100)
+  h.send(200, []); const lost = h.sample(200)
+  assert.ok(lost.attraction > 0 && lost.attraction < before.attraction)
+  assert.ok(lost.opacity < before.opacity)
+  assert.equal(lost.x, before.x)
+  h.send(250, [syntheticHand({ x: .7, ratio: .2 })]); const returned = h.sample(250, .05)
+  assert.equal(returned.x, lost.x); assert.ok(returned.attraction < lost.attraction)
+  let previous = returned.attraction
+  for (let t = 350; t <= 1250; t += 100) {
+    h.send(t, [syntheticHand({ x: .7, ratio: .2 })]); const input = h.sample(t)
+    assert.ok(input.attraction <= previous); previous = input.attraction
+  }
+  assert.equal(previous, 0)
+  h.send(1350, [syntheticHand({ x: .7, ratio: .6 })]); assert.equal(h.sample(1350).active, false)
+  h.send(1450, [syntheticHand({ x: .7, ratio: .2 })]); assert.equal(h.sample(1450).active, true)
+})
+test('initial closed hand, stale input, resets, and camera re-enable all require open then a fresh pinch', () => {
+  const h = oneHandHarness()
+  h.send(0, [syntheticHand({ ratio: .2 })]); assert.equal(h.sample(0).active, false)
+  h.send(100, [syntheticHand({ ratio: .35 })]); assert.equal(h.sample(100).active, false)
+  h.send(200, [syntheticHand({ ratio: .6 })]); h.sample(200)
+  h.send(300, [syntheticHand({ ratio: .2 })]); const active = h.sample(300); assert.ok(active.active)
+  const stale = h.sample(600)
+  assert.ok(stale.attraction < active.attraction)
+  h.send(650, [syntheticHand({ ratio: .2 })]); assert.ok(h.sample(650).attraction < stale.attraction)
+  h.hand.reset(); assert.equal(h.sample(660).active, false)
+  h.send(750, [syntheticHand({ ratio: .2 })]); assert.equal(h.sample(750).active, false)
+  h.hand.setEnabled(false); h.hand.setEnabled(true)
+  h.send(850, [syntheticHand({ ratio: .2 })]); assert.equal(h.sample(850).active, false)
+  h.send(950, [syntheticHand({ ratio: .6 })]); h.sample(950)
+  h.send(1050, [syntheticHand({ ratio: .2 })]); assert.equal(h.sample(1050).active, true)
+})
+test('one selected hand stays primary; mouse drag wins and hover does not steal hand control', () => {
+  const h = oneHandHarness()
+  h.send(0, [syntheticHand({ x: .2, label: 'Left' }), syntheticHand({ x: .8, label: 'Right' })])
+  const primary = h.sample(0)
+  h.send(100, [syntheticHand({ x: .8, label: 'Right', ratio: .2 }), syntheticHand({ x: .2, label: 'Left' })])
+  assert.equal(h.sample(100).active, false)
+  h.send(200, [syntheticHand({ x: .8, label: 'Right', ratio: .2 })])
+  const absent = h.sample(200)
+  assert.equal(absent.x, primary.x)
+  assert.equal(absent.active, false)
+  const mouse = { ...idle, x: -.4 }, hand = { ...idle, x: .4, visible: true }
+  assert.equal(selectInteraction(mouse, hand), hand)
+  mouse.active = true; assert.equal(selectInteraction(mouse, hand), mouse)
+  mouse.active = false; hand.visible = false; assert.equal(selectInteraction(mouse, hand), mouse)
+})
+test('hand fading agrees at 30/120 Hz and rejects invalid timing settings', () => {
+  const fade = hz => {
+    const h = oneHandHarness()
+    h.send(0, [syntheticHand()]); h.sample(0)
+    h.send(100, [syntheticHand({ ratio: .2 })]); h.sample(100)
+    h.send(200, [])
+    let input
+    for (let i = 1; i <= hz / 2; i++) input = h.sample(200 + i * 1000 / hz, 1 / hz)
+    return input
+  }
+  assert.ok(Math.abs(fade(30).attraction - fade(120).attraction) < 1e-10)
+  assert.ok(Math.abs(fade(30).opacity - fade(120).opacity) < 1e-10)
+  assert.throws(() => createHandInput({ staleMs: 0 }), RangeError)
+})
+
+test('renderer consumes hand input for the marker and particles; mouse capture overrides and clears it', async () => {
+  let rendered, resets = 0
+  globalThis.window = new Surface(); window.devicePixelRatio = 1; window.matchMedia = () => ({ matches: true })
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} }
+  const frames = new Map(); let id = 0
+  globalThis.requestAnimationFrame = callback => { frames.set(++id, callback); return id }
+  globalThis.cancelAnimationFrame = key => frames.delete(key)
+  globalThis.testThree.WebGLRenderer = class {
+    domElement = new Surface(); ratio = 1
+    setPixelRatio(v) { this.ratio = v } getPixelRatio() { return this.ratio }
+    setSize() {} render(scene) { rendered = scene.children[0] }
+    dispose() {} forceContextLoss() {}
+  }
+  const { createParticleRenderer } = await import(moduleURL('src/particles/renderer.ts'))
+  const host = new Surface(), marker = new Surface()
+  const value = { x: .5, y: -.25, visible: true, active: false, attraction: 0, opacity: .4 }
+  const source = { sample: () => value, reset() { resets++; value.active = false; value.visible = false; value.attraction = 0; value.opacity = 0 } }
+  const renderer = createParticleRenderer(host, marker, () => assert.fail('render failed'), source)
+  const tick = now => { const [key, callback] = frames.entries().next().value; frames.delete(key); callback(now) }
+  tick(1000)
+  assert.equal(marker.style.transform, 'translate(600px, 375px)'); assert.equal(marker.style.opacity, '0.4')
+  const original = rendered.geometry.attributes.position.array.slice()
+  Object.assign(value, { x: 0, y: 0, active: true, attraction: 1 })
+  for (let i = 1; i <= 60; i++) tick(1000 + i * 1000 / 60)
+  assert.ok(error(original, rendered.geometry.attributes.position.array) > 1)
+  Object.assign(value, { active: false, attraction: 0 })
+  for (let i = 61; i <= 240; i++) tick(1000 + i * 1000 / 60)
+  assert.ok(error(original, rendered.geometry.attributes.position.array) < .001)
+  Object.assign(value, { active: true, attraction: 1 })
+  pointer(host.children[0], 'pointerdown')
+  tick(5100)
+  assert.ok(resets > 0); assert.equal(value.attraction, 0)
+  assert.equal(marker.style.transform, 'translate(400px, 300px)')
+  renderer.dispose(); assert.equal(frames.size, 0)
 })

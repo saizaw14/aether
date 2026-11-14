@@ -1,10 +1,10 @@
-// Input contract is independent of React and the renderer. Future hand input can
-// supply the same normalized position and active state without changing physics.
-export interface InteractionInput { x: number; y: number; active: boolean; visible: boolean }
-export function createMouseInput(canvas: HTMLCanvasElement, marker: HTMLElement) {
+import type { InteractionInput } from '../input/types'
+export type { InteractionInput } from '../input/types'
+
+export function createMouseInput(canvas: HTMLCanvasElement) {
   const input: InteractionInput = { x: 0, y: 0, active: false, visible: false }
   let activePointer: number | null = null
-  const hide = () => { input.visible = false; marker.dataset.visible = 'false' }
+  const hide = () => { input.visible = false }
   const update = (event: PointerEvent) => {
     if (!event.isPrimary || (activePointer !== null && event.pointerId !== activePointer)) return
     const rect = canvas.getBoundingClientRect()
@@ -12,15 +12,12 @@ export function createMouseInput(canvas: HTMLCanvasElement, marker: HTMLElement)
     input.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
     input.y = 1 - ((event.clientY - rect.top) / rect.height) * 2
     input.visible = true
-    marker.style.transform = `translate(${event.clientX - rect.left}px, ${event.clientY - rect.top}px)`
-    marker.dataset.visible = 'true'
   }
   const release = (event?: PointerEvent) => {
     if (event && activePointer !== null && event.pointerId !== activePointer) return
     const captured = activePointer
     activePointer = null
     input.active = false
-    marker.dataset.active = 'false'
     if (captured !== null && canvas.hasPointerCapture(captured)) canvas.releasePointerCapture(captured)
     if (event) {
       const rect = canvas.getBoundingClientRect()
@@ -34,7 +31,6 @@ export function createMouseInput(canvas: HTMLCanvasElement, marker: HTMLElement)
     activePointer = event.pointerId
     input.active = true
     canvas.setPointerCapture(event.pointerId)
-    marker.dataset.active = 'true'
   }
   const leave = () => { if (!input.active) hide() }
   const blur = () => release()
@@ -46,7 +42,7 @@ export function createMouseInput(canvas: HTMLCanvasElement, marker: HTMLElement)
   window.addEventListener('pointerup', release)
   window.addEventListener('pointercancel', release)
   window.addEventListener('blur', blur)
-  return { input, reset: () => release(), dispose() {
+  return { input, sample: () => input, reset: () => release(), dispose() {
     release()
     canvas.removeEventListener('pointermove', update)
     canvas.removeEventListener('pointerdown', down)
@@ -71,7 +67,7 @@ export function stepParticles(positions: Float32Array, target: Float32Array, inp
     const z = target[i + 2]
     if (input.active) {
       const distance = Math.hypot(positions[i] - worldX, positions[i + 1] - worldY)
-      const influence = Math.max(0, 1 - distance / 3.2) * strength * 0.92
+      const influence = Math.max(0, 1 - distance / 3.2) * strength * (input.attraction ?? 1) * 0.92
       x += (worldX - x) * influence
       y += (worldY - y) * influence
     }
