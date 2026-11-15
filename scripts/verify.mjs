@@ -470,7 +470,8 @@ test('renderer consumes hand input for the marker and particles; mouse capture o
   const host = new Surface(), marker = new Surface()
   const value = { x: .5, y: -.25, visible: true, active: false, attraction: 0, opacity: .4 }
   const source = { sample: () => value, reset() { resets++; value.active = false; value.visible = false; value.attraction = 0; value.opacity = 0 } }
-  const renderer = createParticleRenderer(host, marker, () => assert.fail('render failed'), source)
+  const statuses = []
+  const renderer = createParticleRenderer(host, marker, () => assert.fail('render failed'), source, status => statuses.push(status))
   const tick = now => { const [key, callback] = frames.entries().next().value; frames.delete(key); callback(now) }
   tick(1000)
   assert.equal(marker.style.transform, 'translate(600px, 375px)'); assert.equal(marker.style.opacity, '0.4')
@@ -478,6 +479,7 @@ test('renderer consumes hand input for the marker and particles; mouse capture o
   Object.assign(value, { x: 0, y: 0, active: true, attraction: 1 })
   for (let i = 1; i <= 60; i++) tick(1000 + i * 1000 / 60)
   assert.ok(error(original, rendered.geometry.attributes.position.array) > 1)
+  assert.deepEqual(statuses, ['gathering']) // A hold does not send feedback every frame.
   Object.assign(value, { active: false, attraction: 0 })
   for (let i = 61; i <= 240; i++) tick(1000 + i * 1000 / 60)
   assert.ok(error(original, rendered.geometry.attributes.position.array) < .001)
@@ -490,6 +492,7 @@ test('renderer consumes hand input for the marker and particles; mouse capture o
     transformedTarget[i + 2] = original[i + 2] * 1.5
   }
   assert.ok(error(transformedTarget, rendered.geometry.attributes.position.array) < .001)
+  assert.deepEqual(statuses, ['gathering', 'ready', 'transforming'])
   value.transform = undefined
   Object.assign(value, { active: true, attraction: 1 })
   pointer(host.children[0], 'pointerdown')
@@ -497,6 +500,7 @@ test('renderer consumes hand input for the marker and particles; mouse capture o
   assert.ok(resets > 0); assert.equal(value.attraction, 0)
   assert.equal(marker.style.transform, 'translate(400px, 300px)')
   renderer.dispose(); assert.equal(frames.size, 0)
+  assert.deepEqual(statuses, ['gathering', 'ready', 'transforming', 'gathering', 'ready'])
 })
 
 const { createTwoHandTransform } = await import(moduleURL('src/input/transform.ts'))
@@ -621,4 +625,54 @@ test('transform smoothing is frame-time based and configuration rejects invalid 
   assert.ok(Math.abs(run(30).rotation - run(120).rotation) < 1e-12)
   assert.throws(() => createTwoHandTransform({ minScale: 2 }), RangeError)
   assert.throws(() => createTwoHandTransform({ maxScale: NaN }), RangeError)
+})
+
+const { handControlsEnabled, createTrackingFeedback, appliedGestureStatus } = await import(moduleURL('src/input/feedback.ts'))
+test('explicit mode gating requires Hand, ready camera, and unpaused input', () => {
+  for (const mode of ['mouse', 'hand']) for (const cameraReady of [false, true]) for (const paused of [false, true]) {
+    assert.equal(handControlsEnabled({ mode, cameraReady, paused }), mode === 'hand' && cameraReady && !paused)
+  }
+})
+test('tracking feedback distinguishes initial search, one/two hands, loss and recovery without stale replay', () => {
+  const feedback = createTrackingFeedback()
+  assert.equal(feedback.update({ timestamp: 0, accepted: true, hands: [], events: [] }), 'Searching')
+  const both = transformResult(100, line(), [false, false])
+  assert.equal(feedback.update({ ...both, hands: both.hands.slice(0, 1) }), 'One hand')
+  assert.equal(feedback.update(both), 'Two hands')
+  assert.equal(feedback.update({ ...both, hands: both.hands.map(h => ({ ...h, present: false })) }), 'Tracking lost')
+  assert.equal(feedback.update({ ...both, accepted: false }), 'Tracking lost')
+  assert.equal(feedback.update(both), 'Two hands')
+  assert.equal(feedback.reset(), 'Searching')
+  assert.equal(feedback.update({ ...both, hands: [] }), 'Searching')
+})
+test('pause or Mouse mode clears active hand force, retains transform, and resumes without a held-pinch action', () => {
+  const control = createHandControls()
+  control.setEnabled(handControlsEnabled({ mode: 'hand', cameraReady: true, paused: false }))
+  control.update(transformResult(0, line(), [false, false]), 0)
+  control.update(transformResult(100, line(), [true, false]), 100)
+  assert.ok(control.sample(100, .1).active)
+  control.setEnabled(handControlsEnabled({ mode: 'hand', cameraReady: true, paused: true }))
+  const paused = control.sample(110, .01)
+  assert.equal(paused.active, false); assert.equal(paused.attraction, 0); assert.equal(paused.visible, false)
+  control.update(transformResult(200, line()), 200)
+  assert.equal(control.sample(200, .1).transform.active, false)
+  control.setEnabled(true)
+  control.update(transformResult(300, line()), 300)
+  assert.equal(control.sample(300, .1).active, false)
+  assert.equal(control.sample(300, .1).transform.active, false)
+  control.update(transformResult(400, line(), [false, false]), 400)
+  control.update(transformResult(500, line()), 500)
+  assert.equal(control.sample(500, .1).transform.active, true)
+  control.update(transformResult(600, line(1.5, .5)), 600)
+  const pose = control.sample(600, 1).transform
+  control.setEnabled(handControlsEnabled({ mode: 'mouse', cameraReady: true, paused: false }))
+  const mouse = control.sample(610, .01)
+  assert.equal(mouse.transform.active, false); assert.equal(mouse.transform.scale, pose.scale)
+  assert.equal(mouse.transform.rotation, pose.rotation); assert.equal(mouse.attraction, 0)
+})
+test('gesture feedback describes applied interaction, giving transformation priority over gathering', () => {
+  assert.equal(appliedGestureStatus({ ...idle }, false), 'ready')
+  assert.equal(appliedGestureStatus({ ...idle, active: true, attraction: 0 }, false), 'ready')
+  assert.equal(appliedGestureStatus({ ...idle, active: true }, false), 'gathering')
+  assert.equal(appliedGestureStatus({ ...idle, active: true }, true), 'transforming')
 })

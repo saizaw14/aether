@@ -1,3 +1,5 @@
+export type GestureStatus = 'ready' | 'gathering' | 'transforming'
+
 export interface FormationTransform { active: boolean; scale: number; rotation: number }
 
 /** Normalized viewport coordinates (Y up), shared by every input adapter. */
