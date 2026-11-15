@@ -449,3 +449,38 @@ footer {
 .gesture-settings { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; color: #b2bccb; font-size: 10px; }
 .gesture-settings select { font: inherit; color: #d2e1e7; background: #171d29; border: 1px solid #ffffff24; border-radius: 5px; padding: 5px; }
 .gesture-settings select:focus-visible { outline: 2px solid #9de8e9; outline-offset: 3px; }
+
+/* Compact feedback stays at the edge; optional guidance and settings are collapsed. */
+.camera-panel { width: 286px; max-height: calc(100svh - 310px); scrollbar-width: thin; }
+.mode-selector { margin-top: 13px; padding: 3px; border: 1px solid #ffffff12; border-radius: 8px; }
+.mode-selector button { flex: 1; min-height: 34px; font-size: 12px; }
+.live-feedback { margin: 14px 0; display: grid; gap: 8px; }
+.live-feedback > div { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.live-feedback dt { font-size: 10px; color: #9fa9ba; }
+.live-feedback dd { margin: 0; font-size: 11px; color: #cce8e7; }
+.gesture-value { text-transform: capitalize; }
+.pause-hands { width: 100%; min-height: 34px; border: 1px solid #a5c9dd30; border-radius: 6px; background: #a5c9dd0a; font-size: 11px; }
+.pause-hands[data-paused=true] { color: #e5d2ad; border-color: #e5d2ad40; }
+.pause-hands:disabled { opacity: .4; }
+.control-hint { margin: 9px 0 0; font-size: 10px; color: #a3adbd; line-height: 1.6; }
+.camera-actions button { flex: 1; min-height: 34px; }
+.guidance-details { border-top: 1px solid #ffffff12; margin-top: 13px; font-size: 10px; color: #aab5c7; line-height: 1.65; }
+.guidance-details summary { cursor: pointer; min-height: 34px; padding: 9px 0 3px; color: #d0d9e5; }
+.guidance-details ol { margin: 9px 0; padding-left: 20px; }
+.guidance-details li { margin-bottom: 8px; }
+.guidance-details strong { color: #e0e8f1; font-weight: 500; }
+.guidance-details .camera-permission { margin-top: 12px; }
+.guidance-details .preview-options { margin-top: 10px; }
+.keyboard-hint { color: #8e9ab0; }
+.guidance-details summary:focus-visible, select:focus-visible { outline: 2px solid #9de8e9; outline-offset: 4px; border-radius: 3px; }
+.preview-options label { min-height: 30px; }
+.scene-caption { display: none; }
+@media (max-width: 850px) {
+  .camera-panel { width: 260px; max-height: calc(100svh - 360px); }
+}
+@media (max-width: 650px) {
+  .camera-panel { top: max(190px, calc(100svh - 510px)); bottom: 230px; right: 20px; width: 260px; max-height: none; }
+  .intro { top: 100px; }
+  .intro h1 { font-size: 24px; }
+  .intro-description { display: none; }
+}

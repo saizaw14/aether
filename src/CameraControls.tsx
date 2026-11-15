@@ -4,16 +4,27 @@ import type { CameraState } from './camera/session'
 import { drawTrackingPreview } from './camera/landmarks'
 import { createGestureEngine, GESTURE_SENSITIVITY_PRESETS } from './gestures/engine'
 import type { GestureEngine, GestureResult, GestureSensitivity } from './gestures/engine'
+import { createTrackingFeedback } from './input/feedback'
+import type { ControlMode, TrackingStatus } from './input/feedback'
+import type { GestureStatus } from './input/types'
 
-interface Props { onGestures?: (result: GestureResult) => void; onCameraState?: (state: CameraState) => void }
-export default function CameraControls({ onGestures, onCameraState }: Props) {
+interface Props {
+  mode: ControlMode
+  paused: boolean
+  gestureStatus: GestureStatus
+  onModeChange: (mode: ControlMode) => void
+  onPauseChange: (paused: boolean) => void
+  onGestures?: (result: GestureResult) => void
+  onCameraState?: (state: CameraState) => void
+}
+export default function CameraControls({ mode, paused, gestureStatus, onModeChange, onPauseChange, onGestures, onCameraState }: Props) {
   const sensitivity = useRef<GestureSensitivity>('balanced')
   const [sensitivityName, setSensitivityName] = useState<GestureSensitivity>('balanced')
   const engine = useRef<GestureEngine | null>(null)
   const observer = useRef(onGestures)
   const stateObserver = useRef(onCameraState)
-  const summary = useRef('')
-  const [gestureSummary, setGestureSummary] = useState('')
+  const previousTracking = useRef<TrackingStatus>('Searching')
+  const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>('Searching')
   useEffect(() => { observer.current = onGestures; stateObserver.current = onCameraState }, [onGestures, onCameraState])
   const video = useRef<HTMLVideoElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -21,22 +32,26 @@ export default function CameraControls({ onGestures, onCameraState }: Props) {
   const mirrored = useRef(true)
   const [showPreview, setShowPreview] = useState(false)
   const [mirrorPreview, setMirrorPreview] = useState(true)
-  const [handCount, setHandCount] = useState(0)
-  const previousCount = useRef(0)
   const session = useRef<ReturnType<typeof createCameraSession> | null>(null)
   const [state, setState] = useState<CameraState>(cameraOff)
   useEffect(() => {
     if (!video.current) return
+    const tracking = createTrackingFeedback()
     const gestures = createGestureEngine({ mirrored: mirrored.current, ...GESTURE_SENSITIVITY_PRESETS[sensitivity.current] })
     engine.current = gestures
     let mounted = true
     let receivedAt = 0
+    const publishTracking = (next: TrackingStatus) => {
+      if (mounted && previousTracking.current !== next) { previousTracking.current = next; setTrackingStatus(next) }
+    }
     const deliver = (result: GestureResult) => {
       observer.current?.(result)
-      const text = result.hands.filter(hand => hand.present).map(hand => `Hand ${hand.id}: ${hand.pinching ? 'pinching' : 'open'}`).join(' · ')
-      if (mounted && summary.current !== text) { summary.current = text; setGestureSummary(text) }
+      publishTracking(tracking.update(result))
     }
-    const controller = createCameraSession(video.current, next => { setState(next); stateObserver.current?.(next) }, {
+    const controller = createCameraSession(video.current, next => {
+      if (next.phase === 'permission' || next.phase === 'off' || next.phase === 'failure') publishTracking(tracking.reset())
+      setState(next); stateObserver.current?.(next)
+    }, {
       getStream: () => {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return Promise.reject(new DOMException('Camera requires HTTPS or localhost', 'NotSupportedError'))
         return navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 30 }, facingMode: 'user' } })
@@ -45,14 +60,10 @@ export default function CameraControls({ onGestures, onCameraState }: Props) {
       bitmap: source => createImageBitmap(source),
       assetBase: new URL(`${import.meta.env.BASE_URL}tracking/mediapipe-1.2.3/`, window.location.href).href,
       onTracking: (frame, image) => {
-        if (frame.timestamp === 0) { receivedAt = 0; deliver(gestures.reset()) }
+        if (frame.timestamp === 0) { receivedAt = 0; publishTracking(tracking.reset()); deliver(gestures.reset()) }
         else {
           receivedAt = performance.now()
           deliver(gestures.update({ ...frame, aspectRatio: frame.aspectRatio ?? 4 / 3 }))
-        }
-        if (previousCount.current !== frame.hands.length) {
-          previousCount.current = frame.hands.length
-          if (mounted) setHandCount(frame.hands.length)
         }
         if (!canvas.current) return
         if (image && previewEnabled.current) drawTrackingPreview(canvas.current, image, frame, mirrored.current)
@@ -73,44 +84,72 @@ export default function CameraControls({ onGestures, onCameraState }: Props) {
     return () => { mounted = false; window.clearInterval(expiry); window.removeEventListener('pagehide', leave); controller.dispose(); session.current = null; engine.current = null }
   }, [])
   const active = !['off', 'failure'].includes(state.phase)
-  return <section className="camera-panel" aria-label="Camera controls">
-    <div className="camera-heading"><span className="control-label">CAMERA</span><span className="camera-badge">{state.phase === 'ready' ? 'Ready' : 'Optional'}</span></div>
-    <p className="camera-status" role="status" aria-live="polite">{state.message}</p>
-    <p className="camera-permission">Permission: {state.permission.replace('-', ' ')}</p>
+  const displayedTracking = state.phase === 'ready' ? trackingStatus : active ? 'Searching' : 'Camera off'
+  return <section className="camera-panel" aria-label="Interaction controls">
+    <div className="camera-heading"><span className="control-label">CONTROLS</span><span className="camera-badge">Video only · local</span></div>
+    <div className="segmented mode-selector" role="group" aria-label="Control mode">
+      <button type="button" aria-pressed={mode === 'mouse'} onClick={() => onModeChange('mouse')}>Mouse</button>
+      <button type="button" aria-pressed={mode === 'hand'} onClick={() => onModeChange('hand')}>Hand</button>
+    </div>
+    <dl className="live-feedback" role="status" aria-live="polite" aria-atomic="true">
+      <div><dt>Tracking</dt><dd>{displayedTracking}</dd></div>
+      <div><dt>Gesture</dt><dd className="gesture-value">{gestureStatus}</dd></div>
+    </dl>
+    <button type="button" className="pause-hands" disabled={mode !== 'hand'}
+      data-paused={paused} aria-describedby="hand-control-hint" onClick={() => onPauseChange(!paused)}>
+      {paused ? 'Resume hand interaction' : 'Pause hand interaction'}
+    </button>
+    <p id="hand-control-hint" className="control-hint">{mode === 'mouse' ? 'Mouse controls active. Hand gestures are ignored.' : paused ? 'Paused. Camera and preview stay on; mouse drag still works.' : state.phase !== 'ready' ? 'Enable camera below to begin. Mouse drag still works.' : 'Open your hand first, then pinch. Mouse drag can take over.'}</p>
+    {state.phase !== 'ready' && state.phase !== 'off' && <p className="camera-status" role="status">{state.message}</p>}
     {state.recovery && <p className="camera-recovery">{state.recovery}</p>}
-    <div className="camera-actions"><button disabled={active} onClick={() => void session.current?.enable()}>{state.phase === 'failure' ? 'Retry · Enable Camera' : 'Enable Camera'}</button><button disabled={!active} onClick={() => session.current?.disable()}>Disable Camera</button></div>
+    <div className="camera-actions">
+      <button type="button" disabled={active} onClick={() => void session.current?.enable()}>{state.phase === 'failure' ? 'Retry · Enable Camera' : 'Enable Camera'}</button>
+      <button type="button" disabled={!active} onClick={() => session.current?.disable()}>Disable Camera</button>
+    </div>
     <div className="preview-options">
-      <label><input type="checkbox" checked={showPreview} onChange={event => {
+      <label><input type="checkbox" checked={showPreview} aria-controls="camera-preview" onChange={event => {
         previewEnabled.current = event.target.checked
         setShowPreview(event.target.checked)
       }} /> Show camera preview</label>
-      <label><input type="checkbox" checked={mirrorPreview} onChange={event => {
-        mirrored.current = event.target.checked
-        observer.current?.(engine.current?.reset() ?? { timestamp: 0, accepted: true, hands: [], events: [] })
-        engine.current?.configure({ mirrored: event.target.checked })
-        setMirrorPreview(event.target.checked)
-        canvas.current?.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
-      }} /> Mirror view</label>
     </div>
-    <label className="gesture-settings">Gesture sensitivity
-      <select value={sensitivityName} onChange={event => {
-        const next = event.target.value as GestureSensitivity
-        sensitivity.current = next
-        setSensitivityName(next)
-        engine.current?.configure(GESTURE_SENSITIVITY_PRESETS[next])
-      }}>
-        <option value="gentle">Gentle</option>
-        <option value="balanced">Balanced</option>
-        <option value="precise">Precise</option>
-      </select>
-    </label>
-    <div className="tracking-preview" hidden={!showPreview}>
+    <div id="camera-preview" className="tracking-preview" hidden={!showPreview}>
       <canvas ref={canvas} aria-label="Camera preview with hand landmarks" />
-      <span>{state.phase === 'ready' ? `${handCount} / 2 hands detected` : 'Enable camera to see landmarks'}</span>
+      <span>{state.phase === 'ready' ? trackingStatus : 'Enable camera to see landmarks'}</span>
     </div>
-    <p className="camera-hands" role="status">{state.phase === 'ready' ? `${handCount} ${handCount === 1 ? 'hand' : 'hands'} detected` : 'Tracks up to two hands'}</p>
-    {gestureSummary && <p className="camera-hands" role="status">{gestureSummary}</p>}
-    <p className="camera-privacy">Video only. Frames stay on this device.<br />{state.phase === 'ready' ? 'Open hands first. Pinch one to gather, or both to scale and rotate.' : 'Mouse controls remain available.'}</p>
+    <details className="guidance-details">
+      <summary>Gesture guide</summary>
+      <ol>
+        <li><strong>Pinch.</strong> Show an open hand, then bring thumb and index together to gather.</li>
+        <li><strong>Drag.</strong> Move while pinching. Open your hand to release the particles.</li>
+        <li><strong>Transform.</strong> Open both hands, then pinch both. Spread to scale; turn the line between them to rotate.</li>
+      </ol>
+      <p>After tracking loss or resume, open before pinching again. Controls are relative to the screen.</p>
+      <p className="keyboard-hint">Tab between controls. Enter/Space activates buttons and guides; arrow keys adjust sliders and selects.</p>
+    </details>
+    <details className="guidance-details">
+      <summary>Camera settings</summary>
+      <p className="camera-permission">Permission: {state.permission.replace('-', ' ')}</p>
+      <div className="preview-options">
+        <label><input type="checkbox" checked={mirrorPreview} onChange={event => {
+          mirrored.current = event.target.checked
+          observer.current?.(engine.current?.reset() ?? { timestamp: 0, accepted: true, hands: [], events: [] })
+          engine.current?.configure({ mirrored: event.target.checked })
+          setMirrorPreview(event.target.checked)
+          canvas.current?.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
+        }} /> Mirror preview and hand coordinates</label>
+      </div>
+      <label className="gesture-settings">Gesture sensitivity
+        <select value={sensitivityName} onChange={event => {
+          const next = event.target.value as GestureSensitivity
+          sensitivity.current = next
+          setSensitivityName(next)
+          engine.current?.configure(GESTURE_SENSITIVITY_PRESETS[next])
+        }}>
+          <option value="gentle">Gentle</option><option value="balanced">Balanced</option><option value="precise">Precise</option>
+        </select>
+      </label>
+    </details>
+    <p className="camera-privacy">Frames stay on this device. Pause stops hand control; Disable Camera stops capture.</p>
     <video ref={video} muted playsInline className="camera-source" aria-hidden="true" />
   </section>
 }

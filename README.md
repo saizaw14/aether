@@ -96,7 +96,7 @@ Select **Enable Camera** to request video only (`audio: false`). The panel repor
 
 Denied permission provides browser site-settings guidance. Missing devices provide reconnect guidance; unreadable/busy devices suggest closing other camera apps and checking system permissions. Model download failures offer retry guidance. Failed setup stops the camera automatically, and **Retry · Enable Camera** starts a fresh session. HTTPS or localhost is required.
 
-Camera frames are processed locally in a dedicated MediaPipe worker, at up to 10 inference requests per second with only one in flight. The runtime is loaded only after explicit enable. Matching WASM and model assets are served from Aether’s own origin. The preparation script downloads the official model from Google Storage once and verifies its SHA-256; WASM files are copied from the pinned installed package. There are no runtime CDN requests. These are inbound asset requests: no images, video, audio, or landmarks are uploaded, stored, or recorded. Camera readiness means the model has processed its first frame, not that a hand was found. Camera ready enables Hand mode: open-hand hover and deliberate pinch gathering control the same particles as mouse dragging. All mouse controls remain usable.
+Camera frames are processed locally in a dedicated MediaPipe worker, at up to 10 inference requests per second with only one in flight. The runtime is loaded only after explicit enable. Matching WASM and model assets are served from Aether’s own origin. The preparation script downloads the official model from Google Storage once and verifies its SHA-256; WASM files are copied from the pinned installed package. There are no runtime CDN requests. These are inbound asset requests: no images, video, audio, or landmarks are uploaded, stored, or recorded. Camera readiness means the model has processed its first frame, not that a hand was found. Select Hand mode after the camera is ready: open-hand hover and deliberate pinch gathering control the same particles as mouse dragging. All mouse controls remain usable.
 
 `src/CameraControls.tsx` owns the panel and DOM video element. `src/camera/session.ts` owns cancellable startup, state transitions, timeouts, video tracks, and worker scheduling. `src/camera/tracker.worker.ts` owns the local model and frame processing. Disable, failure, page exit, and unmount stop tracks, detach video, cancel frame scheduling/timers, and terminate the worker to release its model/WASM resources. Late streams and frame snapshots are released without restarting a cancelled session.
 
@@ -180,7 +180,7 @@ Verification: `npm run verify` now contains 17 test groups, including scale/aspe
 
 ## One-hand particle controls
 
-1. Run `npm run dev`, open the local URL, and select **Enable Camera**. The header switches to **Hand mode** only when local tracking is ready.
+1. Run `npm run dev`, open the local URL, and select **Enable Camera**. Select **Hand** in the control-mode buttons. Camera readiness alone never changes the selected mode.
 2. Show an open hand to arm interaction. Its thumb/index midpoint moves the subtle marker, using the same mirrored convention as the preview.
 3. Pinch thumb and index together to gather nearby particles; move while holding to move the attraction point.
 4. Open/release to let attraction fade and particles return smoothly to the selected formation.
@@ -205,7 +205,7 @@ Browser/hardware testing was attempted but computer-use permission was unavailab
 
 ## Two-hand scale and rotation
 
-Open both hands once after acquisition, then pinch both to enter **Two-hand transform** mode. Move them apart/together to scale the formation, or turn the line between the hands to rotate it. These are relative screen-based controls, not physical-depth measurements. The header identifies the active transform mode.
+Open both hands once after acquisition, then pinch both to enter **Two-hand transform** mode. Move them apart/together to scale the formation, or turn the line between the hands to rotate it. These are relative screen-based controls, not physical-depth measurements. The compact Gesture status identifies active transformation.
 
 - Entry captures the current displayed controller scale/rotation and the hands’ current distance/angle. Entering/re-entering has no offset jump.
 - Distance ratios scale relative to the captured value. Scale is clamped to **0.5×–2×**. Rotation accumulates the smallest signed angular changes across ±π, so crossing the wrap boundary does not spin the formation. Stable hand IDs fix vector direction independently of detection order.
@@ -219,3 +219,23 @@ Architecture: `src/input/transform.ts` is a pure two-hand controller with refere
 Verification: lint and production build pass, with the existing bundle-size advisory. **30 automated test groups pass**, including reference capture/re-entry, scale clamps, ±π wraparound, hand-order changes, screen aspect/resize rebasing, tracking loss/stale input/degenerate separation, safe closed-hand reacquisition, transform priority and graceful exit, transformed formation convergence with world-space attraction, frame-time smoothing, and renderer forwarding of transformation to particle targets. `git diff --check` also passes.
 
 Live browser testing was attempted but computer-use permission is unavailable. Manual checks still needed: enter with hands at different separations/angles; scale through both limits; rotate across the angle boundary; release either pinch; hide either hand and reacquire closed; switch formations during transformation; resize; use mouse override; disable camera; and Reset. Confirm each entry starts from the current pose and exits preserve it.
+
+
+## Guidance, modes, and feedback
+
+Aether starts in explicit **Mouse** mode. Use the **Mouse / Hand** buttons in the compact edge panel to choose input. Selecting Hand does not request camera access; use **Enable Camera** separately. Camera readiness never silently switches modes. Hand input is enabled only when Hand is selected, camera tracking is ready, and hand interaction is unpaused. Mouse drag remains available as an override in either mode.
+
+**Pause hand interaction / Resume hand interaction** suspends/resumes the hand adapter without stopping camera tracking or the optional preview. Pause and switching to Mouse immediately clear hand force, end live transformation while retaining its pose, and disarm held gestures. On resume/switching back, show an open hand before pinching again. Disable Camera separately stops capture and releases camera resources.
+
+Compact feedback distinguishes:
+
+- **Tracking:** Searching before any hand is found, One hand, Two hands, or Tracking lost after previously observed hands disappear. Camera off is shown when capture is disabled or failed. Tracking feedback continues while hand control is paused or Mouse is selected.
+- **Gesture:** Ready, Gathering, or Transforming, based on the input actually applied by the renderer, including mouse overrides and residual attraction fading. Disarmed raw pinches do not falsely report Gathering. Status callbacks fire only on transitions; particle animation does not update React every frame.
+
+**Gesture guide** is a collapsed native disclosure explaining pinch, drag/release, and two-hand spread/rotation, including open-before-repinch recovery. **Show camera preview** remains directly available; **Camera settings** holds mirroring, sensitivity, and permission detail. These optional sections stay collapsed by default to keep the canvas visually dominant. On narrow/short layouts the panel scrolls within its bounded area.
+
+All interface controls work with mouse and keyboard: Tab/Shift+Tab traverse controls, Enter/Space activate buttons and native disclosure summaries, arrow keys adjust range/select controls, and Space toggles preview checkboxes. Labels, pressed states for mode buttons, visible focus outlines, and a polite status region identify controls and feedback. No hand gesture is required to operate the interface.
+
+Verification on November 15, 2026: lint, production build, and `git diff --check` pass; **34 automated test groups pass**. Added checks cover all explicit-mode/ready/paused gate combinations, search/presence/loss/recovery feedback, stale-result rejection, immediate force clearing on pause/Mouse selection, safe held-pinch resume, retained transform pose, and edge-triggered applied gesture feedback in the mocked renderer. The existing bundle-size advisory remains.
+
+Browser UI/keyboard testing was attempted but blocked by unavailable computer-use permissions. Manual checks: tab through every control at desktop and narrow sizes; activate the mode buttons, pause/resume, preview, guide, settings, sensitivity, formation selector, strength, Reset, and fullscreen; confirm focus remains visible and the panel scrolls focused controls into view. Verify camera-ready does not change Mouse mode, Pause leaves the camera indicator/preview active, Hand resume requires open→pinch, and live status matches searching, one/two hands, loss, gathering, and transformation.

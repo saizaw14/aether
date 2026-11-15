@@ -8,7 +8,10 @@ export function createHandControls(onTransformModeChange?: (active: boolean) => 
   const single = createHandInput()
   const transform = createTwoHandTransform({}, onTransformModeChange)
   return {
-    setEnabled(value: boolean) { single.setEnabled(value); transform.setEnabled(value) },
+    setEnabled(value: boolean) {
+      single.setEnabled(value); transform.setEnabled(value)
+      if (!value) single.reset()
+    },
     update(result: GestureResult, now: number) {
       if (!result.accepted) return
       const wasEngaged = transform.engaged

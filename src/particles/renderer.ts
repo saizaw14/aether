@@ -3,9 +3,10 @@ import { generateFormation, PARTICLE_COUNT } from './formations'
 import type { Formation } from './formations'
 import { createMouseInput, stepParticles } from './interaction'
 import { selectInteraction } from '../input/hand'
-import type { InteractionSource } from '../input/types'
+import { appliedGestureStatus } from '../input/feedback'
+import type { GestureStatus, InteractionSource } from '../input/types'
 
-export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, onError: () => void, handSource?: InteractionSource) {
+export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, onError: () => void, handSource?: InteractionSource, onGestureStatus?: (status: GestureStatus) => void) {
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
@@ -48,6 +49,10 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
   let previous = 0
   let time = 0
   let stopped = false
+  let gestureStatus: GestureStatus = 'ready'
+  const report = (next: GestureStatus) => {
+    if (next !== gestureStatus) { gestureStatus = next; onGestureStatus?.(next) }
+  }
   let viewportWidth = 1
   let viewportHeight = 1
   const resize = () => {
@@ -79,6 +84,7 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
     }
     const hand = handSource?.sample(now, dt, camera.aspect)
     const input = hand?.transform?.active ? hand : selectInteraction(mouse.sample(), hand)
+    report(appliedGestureStatus(input, Boolean(hand?.transform?.active)))
     marker.style.transform = `translate(${(input.x + 1) * viewportWidth / 2}px, ${(1 - input.y) * viewportHeight / 2}px)`
     marker.style.opacity = String(input.visible ? input.opacity ?? 1 : 0)
     marker.dataset.visible = String(input.visible)
@@ -93,9 +99,9 @@ export function createParticleRenderer(host: HTMLElement, marker: HTMLElement, o
   return {
     setFormation(formation: Formation) { target = generateFormation(formation) },
     setStrength(value: number) { strength = value },
-    reset() { mouse.reset(); handSource?.reset(); time = 0; target = generateFormation('nebula'); strength = 0.65 },
+    reset() { report('ready'); mouse.reset(); handSource?.reset(); time = 0; target = generateFormation('nebula'); strength = 0.65 },
     dispose() {
-      stopped = true; cancelAnimationFrame(frame); observer.disconnect(); mouse.dispose(); handSource?.reset()
+      report('ready'); stopped = true; cancelAnimationFrame(frame); observer.disconnect(); mouse.dispose(); handSource?.reset()
       renderer.domElement.removeEventListener('webglcontextlost', lost)
       geometry.dispose(); material.dispose(); renderer.dispose(); renderer.forceContextLoss()
       renderer.domElement.remove()
