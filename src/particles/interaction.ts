@@ -55,12 +55,13 @@ export function createMouseInput(canvas: HTMLCanvasElement) {
 }
 
 export function stepParticles(positions: Float32Array, target: Float32Array, input: InteractionInput,
-  worldX: number, worldY: number, strength: number, dt: number, time: number, reduced: boolean, transform?: FormationTransform) {
+  worldX: number, worldY: number, strength: number, dt: number, time: number, reduced: boolean, transform?: FormationTransform, count = positions.length / 3) {
   const follow = 1 - Math.exp(-dt * (reduced ? 5 : 2.2))
   const scale = transform?.scale ?? 1
   const angle = (reduced ? 0 : Math.sin(time * 0.08) * 0.14) + (transform?.rotation ?? 0)
   const cos = Math.cos(angle), sin = Math.sin(angle)
-  for (let i = 0; i < positions.length; i += 3) {
+  const end = Math.min(positions.length, count * 3)
+  for (let i = 0; i < end; i += 3) {
     const phase = i * 0.17
     const drift = reduced ? 0 : 0.12 * scale
     let x = (target[i] * cos - target[i + 1] * sin) * scale + Math.sin(time * 0.25 + phase) * drift

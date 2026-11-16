@@ -15,6 +15,9 @@ interface Dependencies {
   schedule: (callback: FrameRequestCallback) => number
   cancel: (id: number) => void
   assetBase?: string
+  wantsPreview?: () => boolean
+  now?: () => number
+  onInference?: (now: number, durationMs?: number) => void
   onTracking?: (frame: TrackingFrame, image?: ImageBitmap) => void
 }
 export function cameraFailure(error: unknown, stage: CameraPhase): Pick<CameraState, 'message' | 'recovery'> {
@@ -39,16 +42,17 @@ export function cameraFailure(error: unknown, stage: CameraPhase): Pick<CameraSt
 
 // Each enable owns its resources. Late permission results cannot resurrect a cancelled session.
 export function createCameraSession(video: HTMLVideoElement, publish: (state: CameraState) => void, deps: Dependencies) {
+  let pendingCapture: Promise<void> | undefined
   let generation = 0
   let cleanup: (() => void) | undefined
   let disposed = false
   let phase: CameraPhase = 'off'
   let permission: CameraState['permission'] = 'not-requested'
   const emit = (state: CameraState) => { phase = state.phase; if (!disposed) publish(state) }
-  const stop = () => { generation++; cleanup?.(); cleanup = undefined }
+  const stop = () => { generation++; const release = cleanup; cleanup = undefined; release?.() }
   const disable = () => { stop(); emit({ ...cameraOff, permission }) }
   const enable = async () => {
-    if (disposed) return
+    if (disposed || ['permission', 'initializing', 'loading', 'ready'].includes(phase)) return
     stop()
     const token = generation
     const current = () => !disposed && token === generation
@@ -57,18 +61,23 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
     let frame = 0
     let timeout: ReturnType<typeof setTimeout> | undefined
     let cancelVideo: (() => void) | undefined
+    let released = false
+    let started = false
+    let inFlight: number | undefined
     let busy = false
     let lastFrame = -1
     let lastTime = -100
     const ended = () => fail(new Error('Camera disconnected'))
     cleanup = () => {
+      if (released) return
+      released = true
       if (timeout) clearTimeout(timeout)
       deps.cancel(frame)
       worker?.terminate()
       stream?.getTracks().forEach(track => { track.removeEventListener('ended', ended); track.stop() })
       cancelVideo?.()
       video.pause(); video.srcObject = null
-      deps.onTracking?.({ hands: [], timestamp: 0 })
+      try { deps.onTracking?.({ hands: [], timestamp: 0 }) } catch { /* Teardown must finish even if a consumer fails. */ }
     }
     const fail = (error: unknown) => {
       if (!current()) return
@@ -84,7 +93,14 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
     permission = 'requesting'
     emit({ phase: 'permission', permission, message: 'Waiting for camera permission…' })
     try {
-      stream = await deps.getStream()
+      // Browsers cannot cancel a permission prompt. Wait for its late result to
+      // be released before making another request after Disable → Enable.
+      if (pendingCapture) await pendingCapture
+      if (!current()) return
+      const request = deps.getStream()
+      const settled = request.then(() => {}, () => {})
+      pendingCapture = settled
+      try { stream = await request } finally { if (pendingCapture === settled) pendingCapture = undefined }
       if (!current()) { stream.getTracks().forEach(track => track.stop()); return }
       permission = 'granted'
       stream.getVideoTracks().forEach(track => track.addEventListener('ended', ended))
@@ -113,25 +129,32 @@ export function createCameraSession(video: HTMLVideoElement, publish: (state: Ca
         try {
           const image = await deps.bitmap(video)
           if (!current()) { image.close(); return }
-          worker!.postMessage({ type: 'frame', image, timestamp: now }, [image])
+          inFlight = now
+          worker!.postMessage({ type: 'frame', image, timestamp: now, returnImage: deps.wantsPreview?.() ?? true }, [image])
           watchdog(15000)
         } catch (error) { fail(error) }
       }
-      worker.onmessage = (event: MessageEvent<TrackingFrame & { type: string; message?: string; image?: ImageBitmap }>) => {
+      worker.onmessage = (event: MessageEvent<TrackingFrame & { type: string; message?: string; image?: ImageBitmap; inferenceMs?: number }>) => {
         if (!current()) { event.data.image?.close(); return }
         if (event.data.type === 'error') { fail(new Error(event.data.message)); return }
-        if (event.data.type === 'loaded') {
+        if (event.data.type === 'loaded' && !started) {
+          started = true
           if (timeout) clearTimeout(timeout)
           emit({ phase: 'initializing', permission, message: 'Starting local frame processing…' })
           watchdog(15000)
           frame = deps.schedule(process)
         }
         if (event.data.type === 'result') {
+          if (!busy || inFlight === undefined || event.data.timestamp !== inFlight) { event.data.image?.close(); return }
+          inFlight = undefined
           if (timeout) clearTimeout(timeout)
           busy = false
-          try { deps.onTracking?.({ hands: event.data.hands ?? [], timestamp: event.data.timestamp, aspectRatio: event.data.aspectRatio }, event.data.image) }
+          try {
+            deps.onInference?.(deps.now?.() ?? performance.now(), event.data.inferenceMs)
+            deps.onTracking?.({ hands: event.data.hands ?? [], timestamp: event.data.timestamp, aspectRatio: event.data.aspectRatio }, event.data.image) }
+          catch (error) { fail(error) }
           finally { event.data.image?.close() }
-          if (phase !== 'ready') emit({ phase: 'ready', permission, message: 'Camera ready · frames processed locally.' })
+          if (current() && phase !== 'ready') emit({ phase: 'ready', permission, message: 'Camera ready · frames processed locally.' })
         }
       }
       worker.postMessage({ type: 'load', assetBase: deps.assetBase })

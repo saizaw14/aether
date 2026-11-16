@@ -1,5 +1,6 @@
 // Node contract tests. GPU output and browser UI are deliberately not simulated as proof of visual correctness.
 import test from 'node:test'
+import { getEventListeners } from 'node:events'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -133,7 +134,11 @@ function cameraHarness(getStream, overrides = {}) {
     schedule: cb => { frames.set(++serial, cb); return serial }, cancel: id => frames.delete(id),
     ...overrides,
   })
-  return { session, states, stream, track, video, worker, frames, counts: () => ({ stopped, terminated, paused }) }
+  const tick = async now => {
+    const [key, callback] = frames.entries().next().value
+    frames.delete(key); callback(now); await Promise.resolve()
+  }
+  return { session, states, stream, track, video, worker, frames, tick, counts: () => ({ stopped, terminated, paused }) }
 }
 test('camera lifecycle: permission, initialization, model loading, actual ready response, disable and retry', async () => {
   const h = cameraHarness()
@@ -142,7 +147,8 @@ test('camera lifecycle: permission, initialization, model loading, actual ready 
   assert.equal(h.video.srcObject, h.stream)
   h.worker.onmessage({ data: { type: 'loaded' } })
   assert.equal(h.states.at(-1).phase, 'initializing')
-  h.worker.onmessage({ data: { type: 'result' } })
+  await h.tick(1000)
+  h.worker.onmessage({ data: { type: 'result', timestamp: 1000 } })
   assert.equal(h.states.at(-1).phase, 'ready')
   h.session.disable()
   assert.equal(h.states.at(-1).phase, 'off')
@@ -185,7 +191,7 @@ test('disable/unmount during permission and model loading cannot resurrect camer
 })
 test('camera disconnect is a recoverable failure and stops local resources', async () => {
   const h = cameraHarness(); await h.session.enable()
-  h.worker.onmessage({ data: { type: 'loaded' } }); h.worker.onmessage({ data: { type: 'result' } })
+  h.worker.onmessage({ data: { type: 'loaded' } }); await h.tick(1000); h.worker.onmessage({ data: { type: 'result', timestamp: 1000 } })
   h.track.dispatchEvent(new Event('ended'))
   assert.equal(h.states.at(-1).phase, 'failure')
   assert.equal(h.counts().stopped, 1); assert.equal(h.frames.size, 0)
@@ -675,4 +681,183 @@ test('gesture feedback describes applied interaction, giving transformation prio
   assert.equal(appliedGestureStatus({ ...idle, active: true, attraction: 0 }, false), 'ready')
   assert.equal(appliedGestureStatus({ ...idle, active: true }, false), 'gathering')
   assert.equal(appliedGestureStatus({ ...idle, active: true }, true), 'transforming')
+})
+
+const { createQualityController } = await import(moduleURL('src/performance/quality.ts'))
+const { createPerformanceMonitor } = await import(moduleURL('src/performance/monitor.ts'))
+test('adaptive quality downgrades sustained load, recovers slowly, and ignores suspension gaps', () => {
+  const q = createQualityController()
+  for (let time = 0; time <= 10000; time += 50) q.frame(time)
+  assert.equal(q.profile.level, 'low'); assert.equal(q.profile.particles, 2000)
+  q.frame(100000); assert.equal(q.profile.level, 'low')
+  for (let i = 1; i <= 1200; i++) q.frame(100000 + i * 1000 / 60)
+  assert.equal(q.profile.level, 'high')
+  const fresh = createQualityController()
+  for (let i = 0; i <= 60; i++) fresh.frame(i * 1000 / 60)
+  fresh.frame(50000)
+  for (let i = 1; i <= 60; i++) fresh.frame(50000 + i * 1000 / 60)
+  assert.equal(fresh.profile.level, 'high')
+})
+test('debug metrics use recent render/tracking samples, clear camera data, and report worker duration independently', () => {
+  const monitor = createPerformanceMonitor()
+  for (let i = 0; i < 60; i++) monitor.rendered(i * 1000 / 60)
+  for (let i = 0; i < 10; i++) monitor.tracked(i * 100, 12.5)
+  const s = monitor.snapshot(1000)
+  assert.equal(s.fps, 60); assert.equal(s.trackingHz, 10); assert.equal(s.inferenceMs, 12.5)
+  monitor.setControls({ mode: 'hand', cameraReady: true, paused: true })
+  assert.match(monitor.snapshot(1000).mode, /paused/)
+  assert.equal(monitor.snapshot(3000).fps, 0); assert.equal(monitor.snapshot(3000).trackingHz, 0)
+  assert.equal(monitor.snapshot(3000).inferenceMs, null)
+  monitor.clearTracking(); assert.equal(monitor.snapshot(1000).trackingHz, 0)
+})
+test('25 camera cycles and duplicate startup messages retain one stream, worker and tracking loop', async t => {
+  let streams = 0, workers = 0, requests = 0, activeWorker, lastTrack, delivered = 0, closed = 0
+  const frames = new Map(); let serial = 0
+  const video = new Surface(); Object.assign(video, { readyState: 2, currentTime: 0, play: async () => {}, pause() {} })
+  const session = createCameraSession(video, () => {}, {
+    getStream: async () => {
+      requests++; streams++
+      const track = new EventTarget(); let stopped = false
+      track.stop = () => { if (!stopped) { stopped = true; streams-- } }
+      lastTrack = track
+      return { getTracks: () => [track], getVideoTracks: () => [track] }
+    },
+    createWorker: () => {
+      workers++; let ended = false
+      return activeWorker = { postMessage(message) { this.last = message }, terminate() { if (!ended) { ended = true; workers-- } } }
+    },
+    bitmap: async () => ({ close() {} }),
+    schedule: cb => { frames.set(++serial, cb); return serial }, cancel: key => frames.delete(key),
+    onTracking: frame => { if (frame.timestamp > 0) delivered++ },
+  })
+  t.after(() => session.dispose())
+  for (let cycle = 0; cycle < 25; cycle++) {
+    await Promise.all([session.enable(), session.enable(), session.enable()])
+    assert.equal(streams, 1); assert.equal(workers, 1); assert.equal(requests, cycle + 1)
+    activeWorker.onmessage({ data: { type: 'loaded' } }); activeWorker.onmessage({ data: { type: 'loaded' } })
+    assert.equal(frames.size, 1)
+    video.currentTime++
+    const [key, callback] = frames.entries().next().value
+    frames.delete(key); const now = 1000 + cycle * 100; callback(now); await Promise.resolve()
+    const reply = { type: 'result', timestamp: now, hands: [], inferenceMs: 8 }
+    activeWorker.onmessage({ data: reply })
+    activeWorker.onmessage({ data: { ...reply, image: { close() { closed++ } } } })
+    assert.equal(delivered, cycle + 1); assert.equal(frames.size, 1)
+    session.disable(); session.disable()
+    assert.equal(streams, 0); assert.equal(workers, 0); assert.equal(frames.size, 0)
+    assert.equal(getEventListeners(lastTrack, 'ended').length, 0)
+    assert.equal(getEventListeners(video, 'loadeddata').length, 0)
+    assert.equal(getEventListeners(video, 'error').length, 0)
+  }
+  assert.equal(closed, 25)
+})
+test('disable/re-enable while permission is pending serializes requests and releases the late stream first', async t => {
+  let grant, calls = 0, live = 0
+  const stream = () => {
+    live++; const track = new EventTarget(); let stopped = false
+    track.stop = () => { if (!stopped) { stopped = true; live-- } }
+    return { getTracks: () => [track], getVideoTracks: () => [track] }
+  }
+  const h = cameraHarness(() => {
+    calls++
+    if (calls === 1) return new Promise(resolve => { grant = resolve })
+    assert.equal(live, 0)
+    return Promise.resolve(stream())
+  })
+  t.after(() => h.session.dispose())
+  const first = h.session.enable(); h.session.disable()
+  const second = h.session.enable(); assert.equal(calls, 1)
+  grant(stream()); await first; await second
+  assert.equal(calls, 2); assert.equal(live, 1)
+  h.session.disable(); assert.equal(live, 0)
+})
+test('exact pinch boundaries and confidence limits do not repeat threshold actions', () => {
+  const probe = createGestureEngine({ pinchSmoothingMs: 0 })
+  const start = probe.update(gestureFrame(0, [syntheticHand({ ratio: .25 })])).hands[0].normalizedPinchDistance
+  const release = probe.update(gestureFrame(100, [syntheticHand({ ratio: .5 })])).hands[0].normalizedPinchDistance
+  const e = createGestureEngine({ pinchStart: start, pinchRelease: release, pinchSmoothingMs: 0 })
+  assert.deepEqual(pinchEvents(e.update(gestureFrame(0, [syntheticHand({ ratio: .25, confidence: .5 })]))), ['pinch-start'])
+  assert.deepEqual(pinchEvents(e.update(gestureFrame(100, [syntheticHand({ ratio: .25, confidence: .5 })]))), [])
+  assert.deepEqual(pinchEvents(e.update(gestureFrame(200, [syntheticHand({ ratio: .5, confidence: .5 })]))), ['pinch-release'])
+  assert.deepEqual(pinchEvents(e.update(gestureFrame(300, [syntheticHand({ ratio: .5, confidence: .5 })]))), [])
+  assert.equal(e.update(gestureFrame(400, [syntheticHand({ confidence: .49 })])).hands[0].present, false)
+})
+test('crossing close hands exits transform without a spin and closed-hand recovery stays disarmed', () => {
+  const e = createGestureEngine({ pinchSmoothingMs: 0, positionSmoothingMs: 0, associationMaxDistance: .8 })
+  const control = createHandControls(); control.setEnabled(true)
+  const send = (time, left, right, ratio) => {
+    control.update(e.update(gestureFrame(time, [syntheticHand({ x: left, label: 'Left', ratio }), syntheticHand({ x: right, label: 'Right', ratio })])), time)
+    return control.sample(time, .1)
+  }
+  send(0, .2, .8, .6)
+  assert.equal(send(100, .3, .7, .2).transform.active, true)
+  const close = send(200, .49, .51, .2)
+  assert.equal(close.transform.active, false); assert.ok(Math.abs(close.transform.rotation) < .1)
+  assert.equal(send(300, .6, .4, .2).transform.active, false)
+  send(400, .6, .4, .6)
+  assert.equal(send(500, .6, .4, .2).transform.active, true)
+})
+test('60 Hz particle animation is independent of static gesture delivery at 10 or 30 Hz', () => {
+  const run = hz => {
+    const h = oneHandHarness(), target = new Float32Array([1, 0, 0]), positions = target.slice()
+    h.send(0, [syntheticHand()]); h.sample(0)
+    for (let frame = 1; frame <= 180; frame++) {
+      const time = frame * 1000 / 60
+      if (frame % (60 / hz) === 0) h.send(time, [syntheticHand({ ratio: time >= 100 ? .2 : .6 })])
+      const input = h.hand.sample(time, 1 / 60)
+      stepParticles(positions, target, input, 0, 0, 1, 1 / 60, 0, true)
+    }
+    return positions
+  }
+  assert.ok(error(run(10), run(30)) < 1e-10)
+})
+
+test('renderer stress: visibility, resize/formation changes, adaptive density and failure cleanup leave no loops/listeners', async t => {
+  const oldDocument = globalThis.document
+  t.after(() => { if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument })
+  const doc = new Surface(); doc.hidden = false; globalThis.document = doc
+  globalThis.window = new Surface(); window.devicePixelRatio = 3; window.matchMedia = () => ({ matches: true })
+  const frames = new Map(); let serial = 0, resize, rendered, disposed = 0
+  globalThis.requestAnimationFrame = cb => { frames.set(++serial, cb); return serial }
+  globalThis.cancelAnimationFrame = key => frames.delete(key)
+  globalThis.ResizeObserver = class { constructor(cb) { resize = cb } observe() {} disconnect() {} }
+  globalThis.testThree.WebGLRenderer = class {
+    domElement = new Surface(); ratio = 1
+    setPixelRatio(v) { this.ratio = v } getPixelRatio() { return this.ratio }
+    setSize() {} render(scene) { rendered = scene.children[0] }
+    dispose() { disposed++ } forceContextLoss() {}
+  }
+  const { createParticleRenderer } = await import(moduleURL('src/particles/renderer.ts'))
+  const host = new Surface(), marker = new Surface(), monitor = createPerformanceMonitor()
+  const engine = createParticleRenderer(host, marker, () => assert.fail('unexpected failure'), undefined, undefined, monitor)
+  t.after(() => engine.dispose())
+  const tick = now => { const [key, cb] = frames.entries().next().value; frames.delete(key); cb(now) }
+  doc.hidden = true; doc.dispatchEvent(new Event('visibilitychange')); assert.equal(frames.size, 0)
+  doc.hidden = false; doc.dispatchEvent(new Event('visibilitychange')); doc.dispatchEvent(new Event('visibilitychange'))
+  assert.equal(frames.size, 1); assert.equal(host.children.length, 1)
+  for (let i = 0; i <= 220; i++) {
+    if (i % 5 === 0) {
+      host.rect.width = i % 10 ? 320 : 1000; host.rect.height = i % 10 ? 700 : 500
+      resize(); engine.setFormation(i % 10 ? 'galaxy' : 'nebula')
+    }
+    tick(i * 50 + 1000); assert.equal(frames.size, 1)
+  }
+  assert.equal(monitor.snapshot(12000).quality, 'low')
+  assert.ok(rendered.geometry.drawRange.count <= 2100)
+  assert.ok(rendered.geometry.attributes.position.array.every(Number.isFinite))
+  engine.dispose(); engine.dispose()
+  assert.equal(disposed, 1); assert.equal(frames.size, 0); assert.equal(host.children.length, 0)
+  assert.equal(getEventListeners(doc, 'visibilitychange').length, 0)
+  assert.equal(getEventListeners(window, 'pointerup').length, 0)
+  // Throw after the canvas and mouse listeners exist: initialization must roll back.
+  globalThis.ResizeObserver = class { constructor() { throw new Error('Resize unavailable') } }
+  assert.throws(() => createParticleRenderer(host, marker, () => {}), /Resize unavailable/)
+  assert.equal(host.children.length, 0); assert.equal(frames.size, 0)
+  assert.equal(getEventListeners(window, 'pointerup').length, 0)
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} }
+  let failure = 0
+  const runtime = createParticleRenderer(host, marker, () => { failure++ }, { sample() { throw new Error('Input failed') }, reset() {} })
+  tick(13000)
+  assert.equal(failure, 1); assert.equal(frames.size, 0); assert.equal(host.children.length, 0)
+  runtime.dispose(); assert.equal(getEventListeners(doc, 'visibilitychange').length, 0)
 })
