@@ -6,9 +6,13 @@ import { createGestureEngine, GESTURE_SENSITIVITY_PRESETS } from './gestures/eng
 import type { GestureEngine, GestureResult, GestureSensitivity } from './gestures/engine'
 import { createTrackingFeedback } from './input/feedback'
 import type { ControlMode, TrackingStatus } from './input/feedback'
+import type { PerformanceMonitor } from './performance/monitor'
 import type { GestureStatus } from './input/types'
 
 interface Props {
+  monitor: PerformanceMonitor
+  showDebug: boolean
+  onDebugChange: (visible: boolean) => void
   mode: ControlMode
   paused: boolean
   gestureStatus: GestureStatus
@@ -17,7 +21,7 @@ interface Props {
   onGestures?: (result: GestureResult) => void
   onCameraState?: (state: CameraState) => void
 }
-export default function CameraControls({ mode, paused, gestureStatus, onModeChange, onPauseChange, onGestures, onCameraState }: Props) {
+export default function CameraControls({ monitor, showDebug, onDebugChange, mode, paused, gestureStatus, onModeChange, onPauseChange, onGestures, onCameraState }: Props) {
   const sensitivity = useRef<GestureSensitivity>('balanced')
   const [sensitivityName, setSensitivityName] = useState<GestureSensitivity>('balanced')
   const engine = useRef<GestureEngine | null>(null)
@@ -49,7 +53,7 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
       publishTracking(tracking.update(result))
     }
     const controller = createCameraSession(video.current, next => {
-      if (next.phase === 'permission' || next.phase === 'off' || next.phase === 'failure') publishTracking(tracking.reset())
+      if (next.phase === 'permission' || next.phase === 'off' || next.phase === 'failure') { publishTracking(tracking.reset()); monitor.clearTracking() }
       setState(next); stateObserver.current?.(next)
     }, {
       getStream: () => {
@@ -58,6 +62,8 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
       },
       createWorker: () => new Worker(new URL('./camera/tracker.worker.ts', import.meta.url), { type: 'module' }),
       bitmap: source => createImageBitmap(source),
+      wantsPreview: () => previewEnabled.current,
+      onInference: (now, duration) => monitor.tracked(now, duration),
       assetBase: new URL(`${import.meta.env.BASE_URL}tracking/mediapipe-1.2.3/`, window.location.href).href,
       onTracking: (frame, image) => {
         if (frame.timestamp === 0) { receivedAt = 0; publishTracking(tracking.reset()); deliver(gestures.reset()) }
@@ -67,7 +73,7 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
         }
         if (!canvas.current) return
         if (image && previewEnabled.current) drawTrackingPreview(canvas.current, image, frame, mirrored.current)
-        else canvas.current.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
+        else if (frame.timestamp === 0) canvas.current.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
       },
       schedule: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id),
     })
@@ -82,7 +88,7 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
     const leave = () => controller.disable()
     window.addEventListener('pagehide', leave)
     return () => { mounted = false; window.clearInterval(expiry); window.removeEventListener('pagehide', leave); controller.dispose(); session.current = null; engine.current = null }
-  }, [])
+  }, [monitor])
   const active = !['off', 'failure'].includes(state.phase)
   const displayedTracking = state.phase === 'ready' ? trackingStatus : active ? 'Searching' : 'Camera off'
   return <section className="camera-panel" aria-label="Interaction controls">
@@ -110,6 +116,7 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
       <label><input type="checkbox" checked={showPreview} aria-controls="camera-preview" onChange={event => {
         previewEnabled.current = event.target.checked
         setShowPreview(event.target.checked)
+        if (!event.target.checked) canvas.current?.getContext('2d')?.clearRect(0, 0, canvas.current.width, canvas.current.height)
       }} /> Show camera preview</label>
     </div>
     <div id="camera-preview" className="tracking-preview" hidden={!showPreview}>
@@ -149,6 +156,7 @@ export default function CameraControls({ mode, paused, gestureStatus, onModeChan
         </select>
       </label>
     </details>
+    <label className="debug-toggle"><input type="checkbox" checked={showDebug} onChange={event => onDebugChange(event.target.checked)} /> Show performance debug</label>
     <p className="camera-privacy">Frames stay on this device. Pause stops hand control; Disable Camera stops capture.</p>
     <video ref={video} muted playsInline className="camera-source" aria-hidden="true" />
   </section>

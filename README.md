@@ -239,3 +239,41 @@ All interface controls work with mouse and keyboard: Tab/Shift+Tab traverse cont
 Verification on November 15, 2026: lint, production build, and `git diff --check` pass; **34 automated test groups pass**. Added checks cover all explicit-mode/ready/paused gate combinations, search/presence/loss/recovery feedback, stale-result rejection, immediate force clearing on pause/Mouse selection, safe held-pinch resume, retained transform pose, and edge-triggered applied gesture feedback in the mocked renderer. The existing bundle-size advisory remains.
 
 Browser UI/keyboard testing was attempted but blocked by unavailable computer-use permissions. Manual checks: tab through every control at desktop and narrow sizes; activate the mode buttons, pause/resume, preview, guide, settings, sensitivity, formation selector, strength, Reset, and fullscreen; confirm focus remains visible and the panel scrolls focused controls into view. Verify camera-ready does not change Mouse mode, Pause leaves the camera indicator/preview active, Hand resume requires open→pinch, and live status matches searching, one/two hands, loss, gathering, and transformation.
+
+## Performance and lifecycle audit
+
+Enable **Show performance debug** in the controls panel for rendering FPS, tracking update rate, the latest worker inference duration, active input/interaction mode, quality level, and drawn point count. The overlay is off by default. Its own React component samples a bounded mutable metrics store at **2 Hz**, and its interval is removed when hidden/unmounted. Rendering, tracking, and metric collection never depend on the overlay. Inference duration measures `detectForVideo` execution inside the worker; it excludes camera startup, model loading, snapshot transfer, and UI work. Rates use recent one-second samples; stale tracking duration becomes unavailable and camera disable clears tracking metrics.
+
+Rendering retains its own requestAnimationFrame loop and uses elapsed seconds. Camera inference runs on a separate scheduler, capped at 10 Hz, with one snapshot/request in flight and decoded-frame deduplication. Particle motion, loss fading, and transformation smoothing continue between tracking updates. UI state changes only on discrete control/camera/tracking/interaction transitions; frame data and performance counters remain outside React state. Hidden previews no longer return their image snapshots to the main thread or redraw a hidden canvas.
+
+Adaptive quality uses foreground FPS windows and changes one level at a time:
+
+| Level | Pixel-density cap | Particle budget |
+| --- | --- | --- |
+| High | 1.75 | 5,000 |
+| Medium | 1.25 | 3,500 |
+| Low | 1.0 | 2,000 |
+
+Below 45 FPS for at least two measured seconds reduces quality; above 57 FPS for at least eight seconds restores a level. Changes have a five-second cooldown to prevent oscillation. Draw/simulation counts ease between budgets instead of replacing meshes/buffers. Hidden-tab gaps and intervals longer than 250 ms reset the timing window rather than count as rendering load. The render loop is cancelled while the document is hidden and restarted once on return; active input is disarmed. Low quality preserves all controls, formations, and camera behavior. These safeguards improve load tolerance but do not guarantee a frame rate on every device.
+
+Lifecycle hardening:
+
+- Repeated Enable calls during permission, camera/model initialization, or ready state are idempotent. Disable→Enable while a permission request is pending waits for and stops the cancelled stream before requesting another.
+- Duplicate worker-ready messages cannot start another tracking scheduler. Only a response matching the current in-flight timestamp can update tracking or metrics; duplicate/stale transferred images are closed.
+- Shutdown is idempotent. Tracks, video handlers, watchdogs, schedules, and workers are released on disable, failure, or unmount. Late snapshots/streams are released without reviving a cancelled generation.
+- Renderer startup now rolls back partial resources if setup fails after creating a canvas or listeners. Runtime input/render failures also clean up. Disposing twice, Strict Mode-style remounts, repeated visibility events, resizing, and formation switching do not add canvases or loops.
+
+### Results — November 16, 2026
+
+Lint, production build, `git diff --check`, and **42 automated test groups pass**. The pre-existing Three.js bundle-size advisory remains. New tests explicitly cover:
+
+- 25 camera enable/disable cycles, repeated Enable, duplicate worker-ready/results, stream/worker/scheduler counts, and listener removal.
+- Disable/re-enable during pending permission, late-stream cleanup, and serialized replacement requests.
+- Pinch threshold equality, confidence boundaries, hysteresis, one-time start/release, tracking loss/recovery, safe resume, and one/two-hand mode transitions.
+- Close hand crossings exiting transform without a large rotation or accidental held-pinch reactivation.
+- Equal 60 Hz simulated particle motion with static gestures delivered at 10 vs 30 Hz.
+- Adaptive downgrade/recovery and suspension-gap handling, rolling metrics/staleness, resize/formation stress, visibility pause/resume, initialization rollback, runtime failure cleanup, and idempotent disposal.
+
+A local Node CPU microbenchmark (300 warm-up + 300 measured updates) measured approximately **0.115 ms mean / 0.141 ms p95** for 5,000 simulated particles, and **0.045 ms mean / 0.046 ms p95** for 2,000. This is a synthetic simulation-only measurement on the execution machine, not a browser/GPU FPS or camera inference benchmark.
+
+Live browser profiling was attempted but computer-use permission is unavailable. Actual GPU FPS, real inference latency, visual adaptation, hardware camera cycling, and sustained memory behavior remain unverified. Manual check: open the debug overlay; enable/disable the camera repeatedly; resize and switch formations; cross/occlude/recover hands; toggle preview and pause; background/restore the tab; throttle rendering and observe quality reduce/recover. Check that FPS continues between inference results, tracking remains single-flight, no duplicate permission requests/camera indicators appear, and the browser console stays clear. Use browser performance/memory tools for a longer-session allocation and GPU check.

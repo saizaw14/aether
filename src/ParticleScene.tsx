@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { createParticleRenderer } from './particles/renderer'
 import type { Formation } from './particles/formations'
 import type { GestureStatus, InteractionSource } from './input/types'
+import type { PerformanceMonitor } from './performance/monitor'
 import type { ParticleRenderer } from './particles/renderer'
 
-interface Props { formation: Formation; strength: number; resetVersion: number; handInput: InteractionSource; onGestureStatus: (status: GestureStatus) => void }
-export default function ParticleScene({ formation, strength, resetVersion, handInput, onGestureStatus }: Props) {
+interface Props { formation: Formation; strength: number; resetVersion: number; monitor: PerformanceMonitor; handInput: InteractionSource; onGestureStatus: (status: GestureStatus) => void }
+export default function ParticleScene({ formation, strength, resetVersion, handInput, onGestureStatus, monitor }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const marker = useRef<HTMLDivElement>(null)
   const engine = useRef<ParticleRenderer | null>(null)
@@ -13,10 +14,10 @@ export default function ParticleScene({ formation, strength, resetVersion, handI
   useEffect(() => {
     if (!host.current || !marker.current) return
     let mounted = true
-    try { engine.current = createParticleRenderer(host.current, marker.current, () => setFailed(true), handInput, onGestureStatus) }
+    try { engine.current = createParticleRenderer(host.current, marker.current, () => setFailed(true), handInput, onGestureStatus, monitor) }
     catch { queueMicrotask(() => { if (mounted) setFailed(true) }) }
     return () => { mounted = false; engine.current?.dispose(); engine.current = null }
-  }, [handInput, onGestureStatus])
+  }, [handInput, onGestureStatus, monitor])
   useEffect(() => { engine.current?.reset() }, [resetVersion])
   useEffect(() => { engine.current?.setFormation(formation) }, [formation, resetVersion])
   useEffect(() => { engine.current?.setStrength(strength) }, [strength, resetVersion])

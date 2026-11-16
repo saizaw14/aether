@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import ParticleScene from './ParticleScene'
 import CameraControls from './CameraControls'
+import DebugOverlay from './DebugOverlay'
+import { createPerformanceMonitor } from './performance/monitor'
 import { createHandControls } from './input/controls'
 import { handControlsEnabled } from './input/feedback'
 import type { ControlMode, ControlPreferences } from './input/feedback'
@@ -9,6 +11,8 @@ import type { Formation } from './particles/formations'
 import './App.css'
 
 function App() {
+  const [monitor] = useState(() => createPerformanceMonitor())
+  const [showDebug, setShowDebug] = useState(false)
   const [gestureStatus, setGestureStatus] = useState<GestureStatus>('ready')
   const [handInput] = useState(() => createHandControls())
   const [preferences, setPreferences] = useState<ControlPreferences>({ mode: 'mouse', paused: false, cameraReady: false })
@@ -16,6 +20,7 @@ function App() {
   const updatePreferences = (changes: Partial<ControlPreferences>) => {
     const next = { ...preferencesRef.current, ...changes }
     preferencesRef.current = next
+    monitor.setControls(next)
     handInput.setEnabled(handControlsEnabled(next))
     setPreferences(next)
   }
@@ -40,7 +45,7 @@ function App() {
   }
   const reset = () => { setFormation('nebula'); setStrength(0.65); setResetVersion(v => v + 1); setNotice('Universe reset.'); }
   return <main className="universe" ref={root}>
-    <ParticleScene formation={formation} strength={strength} resetVersion={resetVersion} handInput={handInput} onGestureStatus={setGestureStatus} />
+    <ParticleScene monitor={monitor} formation={formation} strength={strength} resetVersion={resetVersion} handInput={handInput} onGestureStatus={setGestureStatus} />
     <div className="vignette" aria-hidden="true" />
     <header className="masthead">
       <a href="#" className="wordmark" aria-label="Aether home"><span className="brand-symbol">✧</span> aether<span className="brand-period">.</span></a>
@@ -48,7 +53,8 @@ function App() {
     </header>
     <section className="intro" aria-label="About Aether"><p className="eyebrow">AN INTERACTIVE PARTICLE UNIVERSE</p><h1>Shape the universe<br />with your hands.</h1><p className="intro-description">A little curiosity. Infinite possibilities.</p></section>
     <div className="scene-caption" aria-hidden="true"><span className="caption-line" /><span>{formation === 'nebula' ? '01 / NEBULA' : '02 / GALAXY'}</span><small>5,000 points of possibility</small></div>
-    <CameraControls mode={preferences.mode} paused={preferences.paused} gestureStatus={gestureStatus}
+    {showDebug && <DebugOverlay monitor={monitor} />}
+    <CameraControls monitor={monitor} showDebug={showDebug} onDebugChange={setShowDebug} mode={preferences.mode} paused={preferences.paused} gestureStatus={gestureStatus}
       onModeChange={chooseMode} onPauseChange={paused => updatePreferences({ paused })}
       onGestures={result => handInput.update(result, performance.now())}
       onCameraState={state => updatePreferences({ cameraReady: state.phase === 'ready' })} />
